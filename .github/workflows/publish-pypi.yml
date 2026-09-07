@@ -23,7 +23,7 @@ permissions:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    environment: pypi           # matches the PyPI Trusted Publisher config
+    environment: ${{ matrix.environment }}   # per-package; matches each PyPI pending publisher
     permissions:
       id-token: write           # REQUIRED for OIDC trusted publishing
       contents: read
@@ -31,12 +31,17 @@ jobs:
       fail-fast: false          # publish the packages that can; don't block on one
       matrix:
         include:
+          # PyPI requires each PENDING publisher's (repo, workflow, environment)
+          # tuple to be unique, so each package gets its own environment name.
           - name: lattice-grid-pandas
             dir: packages/lattice-grid-pandas
+            environment: pypi
           - name: lattice-grid-jupyter
             dir: .
+            environment: pypi
           - name: lattice-grid-dash
             dir: packages/lattice-grid-dash
+            environment: pypi-dash
     steps:
       - name: Check out
         uses: actions/checkout@v4
