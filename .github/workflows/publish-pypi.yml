@@ -35,7 +35,7 @@ jobs:
           # tuple to be unique, so each package gets its own environment name.
           - name: lattice-grid-pandas
             dir: packages/lattice-grid-pandas
-            environment: pypi
+            environment: pypi-pandas
           - name: lattice-grid-jupyter
             dir: .
             environment: pypi
@@ -66,6 +66,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: ${{ matrix.dir }}/dist
+          skip-existing: true       # a re-run must not fail on already-published files
           # No `password:` -- Trusted Publishing mints a short-lived OIDC token.
           # To dry-run against TestPyPI instead, set:
           #   repository-url: https://test.pypi.org/legacy/
