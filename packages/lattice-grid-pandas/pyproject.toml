@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lattice-grid-pandas"
+version = "0.1.0"
+description = "Framework-agnostic pandas <-> Lattice Grid serialization and grid-delivery plumbing, shared by the Jupyter and Dash wrappers."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+keywords = ["pandas", "dataframe", "datagrid", "lattice-grid", "serialization"]
+dependencies = [
+    "pandas>=1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "numpy"]
+
+[project.urls]
+Homepage = "https://latticegrid.dev"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lattice_grid_pandas"]

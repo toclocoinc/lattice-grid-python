@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lattice-grid-jupyter"
+version = "0.1.0"
+description = "Edit a pandas DataFrame as a Lattice Grid in Jupyter, with a live round-trip back to Python."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+keywords = ["jupyter", "anywidget", "pandas", "dataframe", "datagrid", "lattice-grid", "spreadsheet"]
+dependencies = [
+    "anywidget>=0.9",
+    "pandas>=1.5",
+    "lattice-grid-pandas==0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "playwright>=1.40",
+    "jupyterlab>=4",
+    "ipykernel",
+    "nbconvert",
+]
+
+[project.urls]
+Homepage = "https://latticegrid.dev"
+
+# This package's pyproject sits at the monorepo root, so scope the sdist to just
+# this package's own files -- otherwise hatchling sweeps in the sibling packages,
+# their node_modules and the dist dir.
+[tool.hatch.build.targets.sdist]
+only-include = ["src/lattice_grid_jupyter", "tests", "examples", "README.md", "pyproject.toml"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.pytest_cache", "packages", "dist", "dist-1.41"]
+
+# Vendor the published grid bundle into the wheel so offline=True works with no
+# network at render time. Comment this block out to ship a CDN-only wheel.
+[tool.hatch.build.targets.wheel]
+packages = ["src/lattice_grid_jupyter"]
+artifacts = [
+    "src/lattice_grid_jupyter/static/lattice-grid.min.js",
+    "src/lattice_grid_jupyter/static/lattice-grid.min.css",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/lattice_grid_jupyter/static/lattice-grid.min.js" = "lattice_grid_jupyter/static/lattice-grid.min.js"
+"src/lattice_grid_jupyter/static/lattice-grid.min.css" = "lattice_grid_jupyter/static/lattice-grid.min.css"

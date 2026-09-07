@@ -1,0 +1,66 @@
+name: Publish Python packages to PyPI
+
+# Builds and publishes all three 1.41 Python packages when a version tag is
+# pushed. Uses PyPI Trusted Publishing (OIDC) -- NO stored API token/secret.
+#
+# Prerequisites the OWNER must do once (see RELEASING.md):
+#   1. Put these packages in a GitHub repository (this workflow must live at
+#      .github/workflows/publish-pypi.yml in that repo).
+#   2. On PyPI, add a Trusted Publisher (or "pending publisher") for EACH of the
+#      three project names, pointing at that repo + this workflow filename +
+#      the `pypi` environment.
+#   3. (Recommended) create a GitHub Environment named `pypi` on the repo.
+
+on:
+  push:
+    tags:
+      - "v*"          # e.g. v0.1.0
+  workflow_dispatch:   # allow a manual run from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi           # matches the PyPI Trusted Publisher config
+    permissions:
+      id-token: write           # REQUIRED for OIDC trusted publishing
+      contents: read
+    strategy:
+      fail-fast: false          # publish the packages that can; don't block on one
+      matrix:
+        include:
+          - name: lattice-grid-pandas
+            dir: packages/lattice-grid-pandas
+          - name: lattice-grid-jupyter
+            dir: .
+          - name: lattice-grid-dash
+            dir: packages/lattice-grid-dash
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build backend
+        run: python -m pip install --upgrade build
+
+      # NOTE: lattice-grid-dash ships its built JS bundle (lattice_grid_dash.min.js)
+      # and generated Python (LatticeGrid.py) as committed artifacts, so a plain
+      # `python -m build` produces a correct wheel with no Node toolchain here.
+      # Rebuild those with `npm run build` BEFORE tagging (see RELEASING.md).
+      - name: Build sdist + wheel
+        working-directory: ${{ matrix.dir }}
+        run: python -m build --outdir dist
+
+      - name: Publish ${{ matrix.name }} to PyPI (OIDC, no token)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ matrix.dir }}/dist
+          # No `password:` -- Trusted Publishing mints a short-lived OIDC token.
+          # To dry-run against TestPyPI instead, set:
+          #   repository-url: https://test.pypi.org/legacy/

@@ -1,0 +1,20 @@
+{
+  "name": "lattice-grid-dash",
+  "version": "0.1.0",
+  "description": "Dash component wrapping Lattice Grid via its shipped React adapter.",
+  "private": true,
+  "main": "src/lib/index.js",
+  "scripts": {
+    "build:js": "node build.mjs",
+    "build:py": "dash-generate-components ./src/lib/components lattice_grid_dash -p package-info.json",
+    "build": "npm run build:js && npm run build:py"
+  },
+  "dependencies": {
+    "@toclocoinc/lattice-grid": "1.40.0",
+    "prop-types": "^15.8.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0",
+    "react-docgen": "^5.4.3"
+  }
+}

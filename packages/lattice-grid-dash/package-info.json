@@ -1,0 +1,7 @@
+{
+  "name": "lattice-grid-dash",
+  "version": "0.1.0",
+  "description": "Dash component wrapping Lattice Grid via its shipped React adapter.",
+  "author": "TOCLOCO Inc.",
+  "license": "Proprietary"
+}

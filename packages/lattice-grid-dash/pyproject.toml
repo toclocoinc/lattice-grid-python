@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lattice-grid-dash"
+version = "0.1.0"
+description = "Edit a pandas DataFrame as a Lattice Grid inside a Dash app, with edits and selection surfaced back to Python callbacks."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+keywords = ["dash", "plotly", "pandas", "dataframe", "datagrid", "lattice-grid", "component"]
+dependencies = [
+    "dash>=2.9",
+    "pandas>=1.5",
+    "lattice-grid-pandas==0.1.0",  # pinned: released together in 1.41
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "playwright>=1.40",
+    "requests",
+]
+
+[project.urls]
+Homepage = "https://latticegrid.dev"
+
+# Ship the generated Python classes AND the built browser assets. The grid JS is
+# vendored (lattice_grid_dash.min.js) so the component works offline.
+[tool.hatch.build.targets.wheel]
+packages = ["lattice_grid_dash"]
+artifacts = [
+    "lattice_grid_dash/lattice_grid_dash.min.js",
+    "lattice_grid_dash/lattice-grid.min.css",
+    "lattice_grid_dash/package-info.json",
+    "lattice_grid_dash/metadata.json",
+]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "lattice_grid_dash",
+    "src",
+    "build.mjs",
+    "package.json",
+    "package-info.json",
+    "README.md",
+    "examples",
+    "tests",
+]
+exclude = ["**/node_modules", "**/__pycache__", "**/.pytest_cache"]
