@@ -143,3 +143,6 @@ skipped (never faked).
   should use a fresh widget.
 * Binary (Arrow/typed-array) transfer would beat columnar-JSON for very wide
   numeric frames; columnar-JSON is what ships here.
+
+---
+Built with [Lattice Grid](https://www.latticegrid.dev), a JavaScript data grid with a Data Router: one live feed keeps grids, charts, boards, Gantt and KPI tiles in step. [Documentation](https://www.latticegrid.dev/docs/) · [Demos](https://www.latticegrid.dev/demos/) · [Licence](https://www.latticegrid.dev/licence/)
