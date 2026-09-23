@@ -27,7 +27,7 @@ pip install lattice-grid-jupyter
 ```
 
 Depends on `anywidget` and `pandas`. The wheel **vendors** the published Lattice
-Grid bundle (`@toclocoinc/lattice-grid@1.70.0`) so offline notebooks work with no
+Grid bundle (`@toclocoinc/lattice-grid@1.71.0`) so offline notebooks work with no
 network at render time.
 
 ### Which grid am I getting?
