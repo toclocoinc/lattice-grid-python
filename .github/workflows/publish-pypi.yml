@@ -1,28 +1,154 @@
 name: Publish Python packages to PyPI
 
-# Builds and publishes all three 1.41 Python packages when a version tag is
-# pushed. Uses PyPI Trusted Publishing (OIDC) -- NO stored API token/secret.
+# The three wrappers exist to put ONE grid version in front of a pandas user, and
+# they do not resolve it at install time: they vendor the grid's browser bundle
+# into their own wheels. So a grid release is not in anybody's notebook until
+# these wheels are rebuilt, and for twenty-nine grid releases nobody rebuilt them
+# — PyPI carried grid 1.40.0 while npm carried 1.69.0 (BACKLOG-0001110).
+#
+# It is automatic now. The grid's own `publish-npm.yml`, once npm has accepted a
+# version, sends this repository a `repository_dispatch` of type `grid-released`
+# carrying `{ version }`. That starts the `bump` job below: it downloads that
+# exact tarball, vendors it, rewrites every version string, rebuilds the Dash
+# component's browser bundle, runs the whole wrapper test suite against the new
+# grid IN A REAL BROWSER, and only then commits and hands off to the publish job.
+# A red test is a release that does not happen.
+#
+# Three ways in, all ending in the same publish:
+#   * repository_dispatch `grid-released`  — the grid told us (the normal path);
+#   * workflow_dispatch with a grid version — the same bump, by hand;
+#   * workflow_dispatch/tag push with none — publish the tree as it stands, the
+#     behaviour this workflow had before, kept for a packaging-only re-release.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC) — NO stored API token. That
+# trust is bound to a repository + WORKFLOW FILENAME + environment, which is why
+# the bump lives in this file rather than a new one: a new filename would need
+# three new trusted publishers registered before it could publish anything.
 #
 # Prerequisites the OWNER must do once (see RELEASING.md):
-#   1. Put these packages in a GitHub repository (this workflow must live at
-#      .github/workflows/publish-pypi.yml in that repo).
-#   2. On PyPI, add a Trusted Publisher (or "pending publisher") for EACH of the
-#      three project names, pointing at that repo + this workflow filename +
-#      the `pypi` environment.
-#   3. (Recommended) create a GitHub Environment named `pypi` on the repo.
+#   1. On PyPI, a Trusted Publisher for EACH of the three project names, pointing
+#      at this repo + `publish-pypi.yml` + the environment in the matrix below.
+#   2. The GitHub Environments `pypi-pandas`, `pypi` and `pypi-dash`.
+#   3. In the GRID repository, the `PYTHON_DISPATCH_TOKEN` secret, so the
+#      dispatch can be sent at all.
 
 on:
+  repository_dispatch:
+    types: [grid-released]
   push:
     tags:
-      - "v*"          # e.g. v0.1.0
-  workflow_dispatch:   # allow a manual run from the Actions tab
+      - "v*"          # e.g. v1.69.0.0
+  workflow_dispatch:
+    inputs:
+      grid_version:
+        description: 'Grid version to vendor, e.g. 1.69.0. Leave empty to publish the tree as it stands.'
+        required: false
+        default: ''
+      revision:
+        description: 'Wrapper revision suffix — 1.69.0 + 0 = wheels 1.69.0.0. Bump only to re-release the same grid.'
+        required: false
+        default: '0'
 
 permissions:
   contents: read
 
+# One release at a time. Two grid versions published minutes apart would
+# otherwise race each other's push to main and publish whichever won.
+concurrency:
+  group: python-release
+  cancel-in-progress: false
+
 jobs:
+  # Everything that can fail, before anything is published. This job ends by
+  # pushing one commit to main, so main always records which grid the wheels on
+  # PyPI carry — a reader of the repository and a reader of the registry see the
+  # same version.
+  bump:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.grid_version != '')
+    permissions:
+      contents: write     # to commit the vendored bundle and the new versions
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      grid_version: ${{ steps.bump.outputs.grid_version }}
+      wrapper_version: ${{ steps.bump.outputs.wrapper_version }}
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          # The push at the end needs credentials, and needs the branch rather
+          # than the detached commit a tag checkout would give.
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The requested version is a request; the tarball's own package.json is the
+      # answer. bump_grid.py refuses if they disagree.
+      - name: Vendor the grid and rewrite every version
+        id: bump
+        env:
+          GRID_VERSION: ${{ github.event.client_payload.version || inputs.grid_version }}
+          REVISION: ${{ inputs.revision || '0' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GRID_VERSION}" ]; then
+            echo "::error::no grid version in the event; nothing to vendor"
+            exit 1
+          fi
+          python tools/bump_grid.py --grid-version "${GRID_VERSION}" --revision "${REVISION}" --build-dash
+
+      - name: Install the three packages as a user would
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build pytest playwright
+          # Installed, not put on sys.path: this tests the artefacts, including
+          # whether the vendored bundle actually lands inside the wheel.
+          python -m pip install ./packages/lattice-grid-pandas
+          python -m pip install .
+          python -m pip install ./packages/lattice-grid-dash
+
+      # The one test that can tell a grid API break from a green unit suite: the
+      # wrappers call createGrid and the shipped React adapter, and a rename
+      # there is invisible to Python. Chromium is installed so the smoke tests
+      # RUN rather than skip — a skipped browser test proves nothing.
+      - name: Install a real browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run the wrapper tests against the new bundle
+        run: python -m pytest tests packages/lattice-grid-dash/tests -v
+
+      - name: Commit the bump
+        id: commit
+        env:
+          GRID_VERSION: ${{ steps.bump.outputs.grid_version }}
+          WRAPPER_VERSION: ${{ steps.bump.outputs.wrapper_version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Already on grid ${GRID_VERSION}; nothing to commit."
+          else
+            git commit -m "Lattice Grid ${GRID_VERSION} -> Python wrappers ${WRAPPER_VERSION}"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build-and-publish:
     runs-on: ubuntu-latest
+    needs: [bump]
+    # `bump` is skipped for a tag push and for a version-less manual run; a
+    # skipped dependency must not stop the publish, but a FAILED one must.
+    if: always() && needs.bump.result != 'failure' && needs.bump.result != 'cancelled'
     environment: ${{ matrix.environment }}   # per-package; matches each PyPI pending publisher
     permissions:
       id-token: write           # REQUIRED for OIDC trusted publishing
@@ -43,8 +169,13 @@ jobs:
             dir: packages/lattice-grid-dash
             environment: pypi-dash
     steps:
+      # The commit the bump just made, when there was one; otherwise whatever
+      # triggered the run. Never a fresh build of main: the wheels published are
+      # the wheels the tests above were run against.
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -57,10 +188,53 @@ jobs:
       # NOTE: lattice-grid-dash ships its built JS bundle (lattice_grid_dash.min.js)
       # and generated Python (LatticeGrid.py) as committed artifacts, so a plain
       # `python -m build` produces a correct wheel with no Node toolchain here.
-      # Rebuild those with `npm run build` BEFORE tagging (see RELEASING.md).
+      # The bump job rebuilds and commits that bundle; for a tag-push release,
+      # rebuild it by hand BEFORE tagging (see RELEASING.md).
       - name: Build sdist + wheel
         working-directory: ${{ matrix.dir }}
         run: python -m build --outdir dist
+
+      # A wheel that says 1.69.0.0 and carries grid 1.40.0 is the exact failure
+      # this whole workflow exists to end, so it is asserted on the artefact
+      # rather than assumed from the job that built it: the version stamped
+      # inside the vendored bundle must be the version the wheel's own number
+      # promises. Checked here, after `build`, because only the built wheel can
+      # answer whether the bundle got INTO it.
+      - name: The wheel carries the grid it claims
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, json, re, sys, zipfile
+
+          wheel = sorted(glob.glob("dist/*.whl"))[-1]
+          version = wheel.split("/")[-1].split("-")[1]
+          parts = version.split(".")
+          expected = ".".join(parts[:3]) if len(parts) == 4 else None
+          z = zipfile.ZipFile(wheel)
+          print(f"{wheel}: wheel version {version}, expecting grid {expected or 'anything (pre-1.69.0.0 numbering)'}")
+
+          found = False
+          for name in z.namelist():
+              if name.endswith("grid_bundle.json"):
+                  declared = json.loads(z.read(name))["grid_version"]
+                  print(f"  {name}: declares grid {declared}")
+                  found = True
+                  if expected and declared != expected:
+                      sys.exit(f"::error::{name} declares grid {declared}, the wheel promises {expected}")
+              elif name.endswith((".min.js",)) and "static" in name or name.endswith("lattice_grid_dash.min.js"):
+                  stamps = sorted(set(re.findall(rb"Lattice Grid (\d+\.\d+\.\d+)", z.read(name))))
+                  stamps = [s.decode() for s in stamps]
+                  print(f"  {name}: stamped {stamps or 'NOTHING'}")
+                  found = True
+                  if not stamps:
+                      sys.exit(f"::error::{name} carries no Lattice Grid version stamp at all")
+                  if expected and stamps != [expected]:
+                      sys.exit(f"::error::{name} carries {stamps}, the wheel promises {expected}")
+          if not found:
+              sys.exit(f"::error::{wheel} vendors no grid and declares none; nothing was checked")
+          print("  OK")
+          PY
 
       - name: Publish ${{ matrix.name }} to PyPI (OIDC, no token)
         uses: pypa/gh-action-pypi-publish@release/v1

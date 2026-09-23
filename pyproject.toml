@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lattice-grid-jupyter"
-version = "0.1.0"
+version = "1.69.0.0"
 description = "Edit a pandas DataFrame as a Lattice Grid in Jupyter, with a live round-trip back to Python."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ keywords = ["jupyter", "anywidget", "pandas", "dataframe", "datagrid", "lattice-
 dependencies = [
     "anywidget>=0.9",
     "pandas>=1.5",
-    "lattice-grid-pandas==0.1.0",
+    "lattice-grid-pandas==1.69.0.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +27,16 @@ dev = [
 
 [project.urls]
 Homepage = "https://latticegrid.dev"
+
+# Both this package and lattice-grid-dash have a `tests/test_smoke_browser.py`.
+# Under pytest's default `prepend` import mode the second of the two to be
+# collected is refused -- "import file mismatch" -- because the basename is
+# already a module name. It never bit while the browser tests skipped for want
+# of playwright; it bit the moment CI installed a browser and ran both suites in
+# one command (BACKLOG-0001110). importlib mode imports by path, so two modules
+# may share a basename.
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
 
 # This package's pyproject sits at the monorepo root, so scope the sdist to just
 # this package's own files -- otherwise hatchling sweeps in the sibling packages,

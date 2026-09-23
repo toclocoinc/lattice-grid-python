@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lattice-grid-dash"
-version = "0.1.0"
+version = "1.69.0.0"
 description = "Edit a pandas DataFrame as a Lattice Grid inside a Dash app, with edits and selection surfaced back to Python callbacks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ keywords = ["dash", "plotly", "pandas", "dataframe", "datagrid", "lattice-grid",
 dependencies = [
     "dash>=2.9",
     "pandas>=1.5",
-    "lattice-grid-pandas==0.1.0",  # pinned: released together in 1.41
+    "lattice-grid-pandas==1.69.0.0",  # pinned: the trio ships on one version (tools/bump_grid.py)
 ]
 
 [project.optional-dependencies]

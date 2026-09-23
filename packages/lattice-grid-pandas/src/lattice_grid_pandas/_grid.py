@@ -18,13 +18,24 @@ pass the string through, and surface the grid's resolved state back for debuggin
 
 from __future__ import annotations
 
+import json
 import pathlib
 
-# The grid version this generation of wrappers is built and verified against.
-GRID_VERSION = "1.40.0"
+# Which grid is vendored is a fact about the npm tarball the wheels were built
+# from, not a decision anyone makes here, so it is read rather than written:
+# ``tools/bump_grid.py`` copies it out of that tarball's own ``package.json``
+# into ``grid_bundle.json``, and this module reports what it finds. A version
+# typed into Python is a version that drifts -- ``GRID_VERSION`` said 1.40.0
+# through twenty-nine grid releases (BACKLOG-0001110).
+_BUNDLE = json.loads(
+    (pathlib.Path(__file__).parent / "grid_bundle.json").read_text(encoding="utf-8")
+)
+
+#: The grid release these wrappers vendor, quote on the CDN and are tested against.
+GRID_VERSION: str = _BUNDLE["grid_version"]
 
 # Published npm package, served file-for-file by jsDelivr.
-_NPM = "@toclocoinc/lattice-grid"
+_NPM: str = _BUNDLE["npm_package"]
 
 
 def CDN_BASE(version: str = GRID_VERSION) -> str:

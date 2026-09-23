@@ -23,11 +23,12 @@ import anywidget
 import pandas as pd
 import traitlets
 
+from lattice_grid_pandas import GRID_VERSION  # noqa: F401  (re-exported)
+
 from . import _serialize as S
 
 _HERE = pathlib.Path(__file__).parent
 _STATIC = _HERE / "static"
-GRID_VERSION = "1.40.0"
 
 
 class LatticeGridWidget(anywidget.AnyWidget):

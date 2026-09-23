@@ -57,8 +57,12 @@ async function loadGrid(model) {
     return window.LatticeGrid;
   }
 
-  // CDN mode: dynamic ESM import, deduped on the window.
-  const version = model.get("_grid_version") || "1.40.0";
+  // CDN mode: dynamic ESM import, deduped on the window. The version comes from
+  // the Python side (which reads it from the vendored tarball) and from nowhere
+  // else: a literal fallback here is a second place to be wrong, and it was --
+  // it still said 1.40.0 at grid 1.69.0 (BACKLOG-0001110).
+  const version = model.get("_grid_version");
+  if (!version) throw new Error("cdn mode but _grid_version is empty");
   const base = CDN_BASE(version);
   if (!document.querySelector("link[data-lattice-css]")) {
     const link = document.createElement("link");

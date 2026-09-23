@@ -12,6 +12,7 @@ develop-eggs/
 # Local build outputs (wheels/sdists are built by CI on tag)
 /dist/
 /dist-1.41/
+/dist-local/
 packages/*/dist/
 
 # Virtual environments

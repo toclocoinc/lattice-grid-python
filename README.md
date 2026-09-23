@@ -27,8 +27,27 @@ pip install lattice-grid-jupyter
 ```
 
 Depends on `anywidget` and `pandas`. The wheel **vendors** the published Lattice
-Grid bundle (`@toclocoinc/lattice-grid@1.40.0`) so offline notebooks work with no
+Grid bundle (`@toclocoinc/lattice-grid@1.69.0`) so offline notebooks work with no
 network at render time.
+
+### Which grid am I getting?
+
+The one the version number says. A wheel is numbered **`<grid version>.<revision>`**
+— `1.69.0.0` carries Lattice Grid `1.69.0` — so the answer is on the tin, and in
+Python:
+
+```python
+import lattice_grid_pandas
+lattice_grid_pandas.GRID_VERSION   # '1.69.0' -- read from the vendored bundle
+```
+
+All three packages (`lattice-grid-pandas`, `lattice-grid-jupyter`,
+`lattice-grid-dash`) share the number and are released together; the two host
+wrappers pin the shared one exactly, so a mixed install is refused rather than
+quietly assembled. A revision above `0` is a packaging fix for the same grid.
+
+Every grid release rebuilds these wheels automatically, so `pip install
+--upgrade lattice-grid-jupyter` gets you the current grid.
 
 ## The grid bundle: CDN vs vendored
 
