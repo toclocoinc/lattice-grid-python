@@ -54,6 +54,18 @@ Nothing here needs a person. If a grid release did not produce wheels, look at
 the Actions tab of this repository first and the grid's `notify-python` job
 second (a missing `PYTHON_DISPATCH_TOKEN` there is a notice, not a failure).
 
+The dispatch arrives about a minute after the grid's `npm publish` returns, but
+npm's registry takes 7 to 12 minutes (observed) to start serving a version it
+has just accepted, so step 1 does not race it: on the automatic
+`repository_dispatch` path, `bump_grid.py --wait-for-registry` polls
+`npm view @toclocoinc/lattice-grid@<version> version` every 30 seconds, for up
+to 20 minutes, logging each attempt, before it packs the tarball. A version
+that never appears fails the job with a message naming the version and how
+long it waited (BACKLOG-0001441, grid 1.71.0, run 35915717001, was the failure
+this closes). A manual `workflow_dispatch` run is unchanged — no wait — on the
+assumption that whoever typed a grid version in by hand already knows it is
+live.
+
 ### Running it by hand
 
 Actions -> **Publish Python packages to PyPI** -> Run workflow, and give it a

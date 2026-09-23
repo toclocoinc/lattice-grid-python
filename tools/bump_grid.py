@@ -44,16 +44,63 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NPM_PACKAGE = "@toclocoinc/lattice-grid"
 
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
+#: How long npm actually takes to serve a version it has just accepted --
+#: observed between 7 and 12 minutes (BACKLOG-0001441, grid 1.71.0, run
+#: 35915717001) -- and how often to ask while waiting.
+DEFAULT_WAIT_INTERVAL = 30.0
+DEFAULT_WAIT_TIMEOUT = 20 * 60.0
+
 
 def _log(message: str) -> None:
     """Print one progress line, flushed so CI logs stay in order."""
     print(f"[bump_grid] {message}", flush=True)
+
+
+def wait_for_npm_version(
+    version: str,
+    *,
+    interval: float = DEFAULT_WAIT_INTERVAL,
+    timeout: float = DEFAULT_WAIT_TIMEOUT,
+    run=subprocess.run,
+    sleep=time.sleep,
+    log=_log,
+) -> None:
+    """Block until the registry serves ``version``, or give up.
+
+    npm accepts a publish well before the registry serves it to a fresh
+    reader -- 7 to 12 minutes, observed -- so packing right after
+    ``npm publish`` returns a 404 (BACKLOG-0001441, grid 1.71.0, run
+    35915717001: the automatic bump ran about a minute after publish and
+    failed). Poll ``npm view`` instead of racing the registry.
+
+    ``run`` and ``sleep`` are injected so a test can fake the registry
+    answering on a later call and skip the real delay between attempts.
+    """
+    spec = f"{NPM_PACKAGE}@{version}"
+    attempts = max(1, int(timeout // interval))
+    for attempt in range(1, attempts + 1):
+        log(f"waiting for the registry to serve {spec} (attempt {attempt}/{attempts})")
+        result = run(
+            ["npm", "view", spec, "version"],
+            capture_output=True, text=True,
+        )
+        seen = (result.stdout or "").strip()
+        if result.returncode == 0 and seen == version:
+            log(f"{spec} is live on the registry")
+            return
+        if attempt < attempts:
+            sleep(interval)
+    raise SystemExit(
+        f"gave up after waiting {timeout / 60:.0f} minutes for the registry "
+        f"to serve {spec}"
+    )
 
 
 def fetch_tarball(version: str, into: pathlib.Path) -> pathlib.Path:
@@ -221,12 +268,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--revision", default="0", help="the wrapper revision suffix (default 0)")
     parser.add_argument("--tarball-dir", default=None, help="keep the unpacked tarball here instead of a temp dir")
     parser.add_argument("--build-dash", action="store_true", help="also rebuild the Dash browser bundle (needs Node)")
+    parser.add_argument(
+        "--wait-for-registry",
+        action="store_true",
+        help=(
+            "poll `npm view` for --grid-version before packing, up to "
+            f"{DEFAULT_WAIT_TIMEOUT / 60:.0f} minutes -- for the automatic "
+            "repository_dispatch path, which can run before npm's registry "
+            "has caught up with npm's own publish"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not _SEMVER.match(args.grid_version):
         raise SystemExit(f"--grid-version {args.grid_version!r} is not a version")
     if not re.match(r"^\d+$", args.revision):
         raise SystemExit(f"--revision {args.revision!r} must be a number")
+
+    if args.wait_for_registry:
+        wait_for_npm_version(args.grid_version)
 
     with tempfile.TemporaryDirectory() as tmp:
         into = pathlib.Path(args.tarball_dir) if args.tarball_dir else pathlib.Path(tmp)

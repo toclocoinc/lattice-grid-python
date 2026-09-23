@@ -92,18 +92,30 @@ jobs:
 
       # The requested version is a request; the tarball's own package.json is the
       # answer. bump_grid.py refuses if they disagree.
+      #
+      # The repository_dispatch path runs ~1 minute after the grid's own `npm
+      # publish`, well before npm's registry serves the version to a fresh
+      # reader (7-12 minutes, observed -- BACKLOG-0001441, grid 1.71.0, run
+      # 35915717001), so --wait-for-registry polls for it first. A manual
+      # workflow_dispatch run is presumed to be pointed at a version the
+      # operator already knows is live, so it is unchanged: no wait.
       - name: Vendor the grid and rewrite every version
         id: bump
         env:
           GRID_VERSION: ${{ github.event.client_payload.version || inputs.grid_version }}
           REVISION: ${{ inputs.revision || '0' }}
+          WAIT_FOR_REGISTRY: ${{ github.event_name == 'repository_dispatch' && '1' || '' }}
         run: |
           set -euo pipefail
           if [ -z "${GRID_VERSION}" ]; then
             echo "::error::no grid version in the event; nothing to vendor"
             exit 1
           fi
-          python tools/bump_grid.py --grid-version "${GRID_VERSION}" --revision "${REVISION}" --build-dash
+          wait_flag=()
+          if [ -n "${WAIT_FOR_REGISTRY}" ]; then
+            wait_flag=(--wait-for-registry)
+          fi
+          python tools/bump_grid.py --grid-version "${GRID_VERSION}" --revision "${REVISION}" --build-dash "${wait_flag[@]}"
 
       - name: Install the three packages as a user would
         run: |
