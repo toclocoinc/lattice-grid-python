@@ -124,6 +124,62 @@ def test_real_browser_manual_edit_round_trip():
     assert pd.api.types.is_integer_dtype(w.df["score"].dtype)
 
 
+def test_real_browser_datetime_edit_round_trip():
+    """BACKLOG-0001425, REAL browser: editing a ``timestamp`` cell must not
+    write 1970.
+
+    The grid's ``timestamp`` column type stores an epoch-MILLISECOND Number
+    and its date/time editor emits exactly that Number on ``cell:changed`` --
+    confirmed here by reading the actual payload, not assumed. Before the fix,
+    ``cast_to_dtype`` ran that Number through ``pd.to_datetime`` with pandas'
+    default nanosecond unit, landing on 1970 instead of the edited instant.
+
+    The browser context timezone is pinned to UTC so the grid's date/time
+    editor (which reads/writes wall-clock text in the browser's own zone
+    when no column ``timeZone`` is configured) agrees with the UTC-declared
+    naive column under this wrapper's contract -- see the pandas README.
+    """
+    df = pd.DataFrame({"when": pd.to_datetime(["2021-06-01T12:00:00"])})
+    w = LatticeGridWidget(df, offline=True)
+
+    with sync_playwright() as p:
+        browser = _launch(p)
+        if browser is None:
+            pytest.skip("no real browser available to launch")
+        context = browser.new_context(timezone_id="UTC")
+        page = context.new_page()
+        try:
+            page.set_content(_page_html(w))
+            page.wait_for_function("window.__rendered === true", timeout=20000)
+            page.wait_for_selector(".lat-cell[role=gridcell]", timeout=8000)
+
+            # REAL manual edit: focus the one cell, Enter opens the date/time
+            # editor (a date input + a time input), retype both, Enter commits.
+            page.locator(".lat-cell[role=gridcell]").first.click()
+            page.keyboard.press("Enter")
+            page.wait_for_selector("input[type=date]", timeout=4000)
+            page.locator("input[type=date]").fill("2022-03-04")
+            page.locator("input[type=time]").fill("15:30")
+            page.keyboard.press("Enter")
+
+            page.wait_for_function("window.__model.get('_edit') !== null", timeout=4000)
+            payload = page.evaluate("window.__model.get('_edit')")
+        finally:
+            browser.close()
+
+    # The grid's actual wire payload: a Number, epoch milliseconds.
+    assert payload["colId"] == "when"
+    assert isinstance(payload["value"], (int, float))
+    expected_ms = pd.Timestamp("2022-03-04T15:30:00", tz="UTC").value // 1_000_000
+    assert payload["value"] == expected_ms, f"{payload['value']} != {expected_ms}"
+
+    # The exact browser payload, pushed through the real widget, must land on
+    # the edited instant -- NOT 1970-01-01 (the pre-fix defect).
+    w._edit = {"key": payload["key"], "colId": payload["colId"], "value": payload["value"]}
+    assert w.df.loc[0, "when"] == pd.Timestamp("2022-03-04T15:30:00")
+    assert w.df.loc[0, "when"].year == 2022  # the direct anti-regression check
+
+
 def test_large_dataframe_renders_virtualized():
     """A 100k-row frame renders in a real browser without freezing (virtualized)."""
     import numpy as np

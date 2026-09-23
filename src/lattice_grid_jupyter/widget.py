@@ -12,6 +12,12 @@ Deployed on a non-localhost origin => pass a key:
 
 Offline notebooks (no CDN at render time):
     w = LatticeGridWidget(df, offline=True)   # grid JS/CSS carried in the widget
+
+Datetime columns are UTC end to end: a naive ``datetime64`` column is treated
+as already being UTC (not the machine's local zone), and a tz-aware column is
+normalized to UTC on the wire and converted back to its own zone on the way
+in, so an edit round-trips to the exact original instant for every column
+kind -- see the ``lattice-grid-pandas`` README for the full contract.
 """
 
 from __future__ import annotations

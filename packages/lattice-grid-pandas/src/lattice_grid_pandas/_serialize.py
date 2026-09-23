@@ -97,8 +97,19 @@ def column_values(series: pd.Series) -> list:
     dtype = series.dtype
 
     if pdt.is_datetime64_any_dtype(dtype):
-        # ISO 8601 strings; NaT -> None. tz-aware keeps its offset.
-        return [None if pd.isna(x) else x.isoformat() for x in series]
+        # ISO 8601 strings; NaT -> None. UTC end to end (BACKLOG-0001425): a
+        # naive column is DECLARED UTC (see the pandas README / widget
+        # docstring), so it must carry an explicit offset marker or the
+        # grid's ``timestamp`` type parses a bare "YYYY-MM-DDTHH:MM:SS" as a
+        # WALL-CLOCK time in the browser's own zone, not UTC. A trailing "Z"
+        # routes it through the offset-aware path instead. tz-aware columns
+        # are normalized to UTC first, so every host renders the identical
+        # instant regardless of the column's original zone.
+        tz = getattr(dtype, "tz", None)
+        if tz is not None:
+            utc = series.dt.tz_convert("UTC")
+            return [None if pd.isna(x) else x.isoformat() for x in utc]
+        return [None if pd.isna(x) else x.isoformat() + "Z" for x in series]
 
     if pdt.is_bool_dtype(dtype):
         # covers numpy bool and pandas nullable boolean (pd.NA -> None)
@@ -176,6 +187,36 @@ def data_fields(df: pd.DataFrame) -> list[str]:
     return [str(name) for name in df.columns]
 
 
+def _cast_datetime(dtype, value) -> pd.Timestamp:
+    """Cast one edited timestamp value back to a datetime64 dtype.
+
+    UTC end to end (BACKLOG-0001425, see the pandas README / widget
+    docstring for the full contract): the grid's ``timestamp`` column type
+    stores an epoch-MILLISECOND instant, so a ``Number`` here is that grid
+    instant -- ``unit='ms'`` is mandatory, or pandas' default nanosecond unit
+    reads it as a moment fractions of a second after 1970. An ISO string with
+    an offset (``Z`` or ``+HH:MM``) is that offset; an offset-less ISO string
+    is UTC under this wrapper's contract, never the machine's local zone. A
+    ``pd.Timestamp`` is taken as given (localized to UTC first if naive).
+
+    The result always lands back on the column's own tz-ness: stripped of tz
+    for a naive column, converted to the column's zone for a tz-aware one --
+    so a Europe/London column keeps reading in Europe/London after the edit.
+    """
+    if isinstance(value, pd.Timestamp):
+        ts = value if value.tzinfo is not None else value.tz_localize("UTC")
+        ts = ts.tz_convert("UTC")
+    elif isinstance(value, (int, float)):
+        ts = pd.to_datetime(value, unit="ms", utc=True)
+    else:
+        # ISO string, with or without an offset.
+        ts = pd.to_datetime(value)
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+    tz = getattr(dtype, "tz", None)
+    return ts.tz_convert(tz) if tz is not None else ts.tz_localize(None)
+
+
 def cast_to_dtype(dtype, value):
     """Cast an edited value back to a column's dtype, so the DataFrame stays typed.
 
@@ -193,7 +234,7 @@ def cast_to_dtype(dtype, value):
         if pdt.is_float_dtype(dtype):
             return float(value)
         if pdt.is_datetime64_any_dtype(dtype):
-            return pd.to_datetime(value)
+            return _cast_datetime(dtype, value)
     except (TypeError, ValueError):
         return value
     return value
