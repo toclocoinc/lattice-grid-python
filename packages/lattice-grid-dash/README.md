@@ -12,7 +12,7 @@ release 1.41). Built on the same shared serialization layer as the Jupyter widge
 
 The component does **not** re-implement a React binding for the grid. It consumes
 the grid's **shipped React adapter** (`@toclocoinc/lattice-grid/modules/react`,
-grid v1.69.0), which exposes `createLatticeGrid({ React, createGrid })`. We feed
+grid v1.70.0), which exposes `createLatticeGrid({ React, createGrid })`. We feed
 it Dash's own React (aliased at bundle time to the global the dash-renderer
 serves) so there is a single React instance on the page. This is the lowest-risk
 path identified in the spike: the grid team owns and versions the adapter.
