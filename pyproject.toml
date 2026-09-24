@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lattice-grid-jupyter"
-version = "1.71.0.0"
+version = "1.71.1.0"
 description = "Edit a pandas DataFrame as a Lattice Grid in Jupyter, with a live round-trip back to Python."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ keywords = ["jupyter", "anywidget", "pandas", "dataframe", "datagrid", "lattice-
 dependencies = [
     "anywidget>=0.9",
     "pandas>=1.5",
-    "lattice-grid-pandas==1.71.0.0",
+    "lattice-grid-pandas==1.71.1.0",
 ]
 
 [project.optional-dependencies]
