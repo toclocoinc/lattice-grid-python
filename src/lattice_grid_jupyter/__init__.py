@@ -3,4 +3,4 @@
 from .widget import LatticeGridWidget, GRID_VERSION
 
 __all__ = ["LatticeGridWidget", "GRID_VERSION", "__version__"]
-__version__ = "1.71.1.0"
+__version__ = "1.71.3.0"
