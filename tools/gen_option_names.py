@@ -6,7 +6,7 @@
 The widget maps ``snake_case`` option keys to camelCase, but only for keys whose
 camelCase form is a real grid property name, so a user's own ids (a column called
 ``sales_total``) are never rewritten. The names come from the shipped declarations.
-Run it as part of a grid bump, then ``tools/check_grid_pin.py``.
+``tools/bump_grid.py`` runs it on every grid bump.
 """
 import pathlib
 import re

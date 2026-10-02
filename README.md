@@ -344,9 +344,9 @@ resolves to `localhost`, `licensed`, or `trial`.
 ## Hosts
 
 JupyterLab 4 and Notebook 7 are proven by automated tests; VS Code and Colab need
-a manual check. See [`docs/hosts.md`](docs/hosts.md). The release flow runs
-`python tools/check_grid_pin.py --expect <grid version>` to check that the
-widget, the vendored bundle and the Dash bundle all carry the same grid.
+a manual check. See [`docs/hosts.md`](docs/hosts.md). `tests/test_grid_version.py`
+checks that the widget, the vendored bundle, the chart and router modules, the
+name tables and the Dash bundle all carry the same grid.
 
 ## Development / tests
 

@@ -19,6 +19,13 @@ rewrites every version string in the repository:
 * the two ``__version__`` strings, the Dash component's three JSON files, and
   the grid version quoted in the READMEs.
 
+It also vendors what ``LatticeChart`` and ``LatticeRouter`` load offline -- the
+base chart module, one module per extension chart type, and the data-router
+module, from the tarball's ``modules/`` -- and regenerates the two name tables
+(``_option_names.py``, ``_chart_names.py``) from the tarball's own
+``lattice-grid.d.ts``, so an automatic release carries all of them at the new
+grid rather than at whichever grid they were last copied from.
+
 The wrapper version is the grid version plus a revision component --
 ``1.69.0`` -> ``1.69.0.0`` -- so a reader can tell which grid a wheel carries
 from its number alone, and a second wheel for the same grid (a packaging fix)
@@ -35,6 +42,7 @@ rebuilt after this runs:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import pathlib
@@ -155,6 +163,67 @@ def vendor_bundle(package: pathlib.Path) -> list[pathlib.Path]:
         written.append(dest)
         _log(f"vendored {dest.relative_to(ROOT)} ({dest.stat().st_size:,} bytes)")
     return written
+
+
+#: The modules the notebook widget ships for offline use, by tarball name
+#: (``modules/<name>.min.js``) -> where in the Jupyter package they go. The chart
+#: type modules are exactly ``lattice_grid_jupyter._chart.EXTENSION_TYPES`` --
+#: ``tests/test_bump_grid.py`` fails if the two lists part company.
+CHART_TYPE_MODULES = (
+    "chart-decomposition",
+    "chart-fan",
+    "chart-hexbin",
+    "chart-ridgeline",
+    "chart-roc",
+    "chart-splom",
+)
+JUPYTER_STATIC = ROOT / "src/lattice_grid_jupyter/static"
+MODULES = {
+    **{name: JUPYTER_STATIC / "charts" / f"{name}.min.js" for name in ("charts", *CHART_TYPE_MODULES)},
+    "data-router": JUPYTER_STATIC / "router" / "data-router.min.js",
+}
+
+_SOURCE_MAP = re.compile(r"^//# sourceMappingURL=\S+[ \t]*$", re.MULTILINE)
+
+
+def vendor_modules(package: pathlib.Path, modules: dict | None = None) -> list[pathlib.Path]:
+    """Copy the chart and data-router UMD modules the widget loads offline.
+
+    The trailing ``//# sourceMappingURL=`` comment is replaced by an empty line:
+    the ``.map`` is not vendored, and the widget injects these as inline script
+    text, where a dangling map reference only produces a failed fetch in the
+    browser console. A module the tarball lacks stops the bump by name.
+    """
+    written = []
+    for name, dest in (MODULES if modules is None else modules).items():
+        src = package / "modules" / f"{name}.min.js"
+        if not src.exists():
+            raise SystemExit(f"the tarball is missing modules/{src.name}; nothing to vendor")
+        text = _SOURCE_MAP.sub("", src.read_text(encoding="utf-8"))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+        written.append(dest)
+        _log(f"vendored {dest.relative_to(ROOT)} ({dest.stat().st_size:,} bytes)")
+    return written
+
+
+def regenerate_name_tables(package: pathlib.Path) -> None:
+    """Rebuild ``_option_names.py`` and ``_chart_names.py`` from the tarball's types.
+
+    The widget only rewrites a snake_case key whose camelCase form the grid
+    declares, and ``LatticeChart`` names an unknown spec key against the
+    declared ``ChartSpec``; both tables must describe the grid being shipped.
+    """
+    dts = package / "lattice-grid.d.ts"
+    if not dts.exists():
+        raise SystemExit("the tarball is missing lattice-grid.d.ts; cannot regenerate the name tables")
+    for tool in ("gen_option_names", "gen_chart_names"):
+        spec = importlib.util.spec_from_file_location(tool, ROOT / "tools" / f"{tool}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if module.main(str(dts)) != 0:
+            raise SystemExit(f"tools/{tool}.py failed on {dts.name}")
+        _log(f"regenerated {module.OUT.relative_to(ROOT)}")
 
 
 def write_grid_bundle_json(grid_version: str) -> pathlib.Path:
@@ -298,6 +367,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         wrapper_version = f"{grid_version}.{args.revision}"
         vendor_bundle(package)
+        vendor_modules(package)
+        regenerate_name_tables(package)
         write_grid_bundle_json(grid_version)
         rewrite_versions(grid_version, wrapper_version)
 

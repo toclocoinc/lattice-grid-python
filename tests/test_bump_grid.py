@@ -125,3 +125,100 @@ def test_wait_for_npm_version_rejects_a_mismatched_answer():
             sleep=lambda seconds: None,
             log=lambda message: None,
         )
+
+
+# --- the chart and router modules, and the name tables -------------------------
+
+
+def _fake_package(root: pathlib.Path, names) -> pathlib.Path:
+    """A tarball-shaped directory whose modules end the way the grid's do."""
+    package = root / "package"
+    (package / "modules").mkdir(parents=True)
+    for name in names:
+        (package / "modules" / f"{name}.min.js").write_text(
+            f"/*! Lattice Grid 9.9.9, {name} module */\n(function(){{}})();\n"
+            f"//# sourceMappingURL={name}.min.js.map\n",
+            encoding="utf-8",
+        )
+    return package
+
+
+def test_vendor_modules_copies_each_module_without_its_source_map(tmp_path, monkeypatch):
+    """Every listed module lands where the widget reads it, map reference stripped."""
+    monkeypatch.setattr(bump_grid, "ROOT", tmp_path)
+    package = _fake_package(tmp_path / "tgz", ["charts", "chart-fan", "data-router"])
+    dests = {
+        "charts": tmp_path / "static/charts/charts.min.js",
+        "chart-fan": tmp_path / "static/charts/chart-fan.min.js",
+        "data-router": tmp_path / "static/router/data-router.min.js",
+    }
+    written = bump_grid.vendor_modules(package, dests)
+    assert written == list(dests.values())
+    for name, dest in dests.items():
+        text = dest.read_text(encoding="utf-8")
+        assert text.startswith(f"/*! Lattice Grid 9.9.9, {name} module */")
+        assert "sourceMappingURL" not in text
+        assert text.endswith("(function(){})();\n\n")
+
+
+def test_vendor_modules_stops_on_a_module_the_tarball_lacks(tmp_path, monkeypatch):
+    """A missing module is a failed bump naming the file, never a silent skip."""
+    monkeypatch.setattr(bump_grid, "ROOT", tmp_path)
+    package = _fake_package(tmp_path / "tgz", ["charts"])
+    with pytest.raises(SystemExit, match="modules/chart-roc.min.js"):
+        bump_grid.vendor_modules(package, {
+            "charts": tmp_path / "charts.min.js",
+            "chart-roc": tmp_path / "chart-roc.min.js",
+        })
+
+
+def test_the_vendored_chart_modules_are_the_widgets_extension_types():
+    """bump_grid vendors exactly the chart type modules ``LatticeChart`` loads."""
+    chart = pytest.importorskip("lattice_grid_jupyter._chart")
+    assert set(bump_grid.CHART_TYPE_MODULES) == {f"chart-{t}" for t in chart.EXTENSION_TYPES}
+    assert set(bump_grid.MODULES) == {"charts", "data-router", *bump_grid.CHART_TYPE_MODULES}
+    assert bump_grid.MODULES["data-router"].parent.name == "router"
+
+
+def test_main_vendors_the_modules_and_regenerates_the_tables(tmp_path, monkeypatch):
+    """The bump itself runs both steps on the tarball it fetched -- so an automatic
+    release carries the chart and router modules and the tables at the new grid."""
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "package.json").write_text('{"version": "9.9.9"}', encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(bump_grid, "fetch_tarball", lambda version, into: package)
+    for step in ("vendor_bundle", "vendor_modules", "regenerate_name_tables"):
+        monkeypatch.setattr(bump_grid, step, lambda pkg, _s=step: calls.append((_s, pkg)))
+    monkeypatch.setattr(bump_grid, "write_grid_bundle_json", lambda v: calls.append(("json", v)))
+    monkeypatch.setattr(bump_grid, "rewrite_versions", lambda g, w: calls.append(("versions", g, w)))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+
+    assert bump_grid.main(["--grid-version", "9.9.9", "--revision", "1"]) == 0
+    assert ("vendor_modules", package) in calls
+    assert ("regenerate_name_tables", package) in calls
+    assert ("versions", "9.9.9", "9.9.9.1") in calls
+
+
+def test_regenerate_name_tables_reads_the_tarball_declarations(tmp_path, monkeypatch):
+    """Both generators run against the tarball's own ``lattice-grid.d.ts``."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    for tool in ("gen_option_names", "gen_chart_names"):
+        (tools / f"{tool}.py").write_text(
+            "import pathlib\n"
+            f"OUT = pathlib.Path({str(out / tool)!r})\n"
+            "def main(dts):\n"
+            "    OUT.write_text(pathlib.Path(dts).read_text())\n"
+            "    return 0\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(bump_grid, "ROOT", tmp_path)
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "lattice-grid.d.ts").write_text("export interface X {}\n", encoding="utf-8")
+    bump_grid.regenerate_name_tables(package)
+    for tool in ("gen_option_names", "gen_chart_names"):
+        assert (out / tool).read_text() == "export interface X {}\n"

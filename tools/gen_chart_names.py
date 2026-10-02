@@ -5,8 +5,8 @@
 
 The chart module does not report an unknown spec key, so ``LatticeChart`` does it
 here, by name, against the property names the grid's ``ChartSpec`` declares (the
-extension chart types' own keys are listed by hand in ``_chart.py``). Run it as
-part of a grid bump, with ``tools/gen_option_names.py`` and ``tools/check_grid_pin.py``.
+extension chart types' own keys are listed by hand in ``_chart.py``).
+``tools/bump_grid.py`` runs it on every grid bump.
 """
 import json
 import pathlib

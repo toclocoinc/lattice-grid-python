@@ -91,5 +91,36 @@ def test_the_dash_component_carries_the_same_grid():
     assert dash.__version__ == lattice_grid_pandas.__version__
 
 
+_JUPYTER_STATIC = _JUPYTER_BUNDLE.parent
+
+
+def test_the_name_tables_were_generated_from_the_grid_shipped():
+    """The option and chart-spec name tables describe the grid in the wheel.
+
+    ``tools/bump_grid.py`` regenerates both from the tarball's own
+    ``lattice-grid.d.ts``; a table left at an older grid would let a renamed
+    option through silently, or warn about one the grid now accepts.
+    """
+    from lattice_grid_jupyter import _chart_names, _option_names
+
+    assert _option_names.GRID_VERSION == lattice_grid_pandas.GRID_VERSION
+    assert _chart_names.GRID_VERSION == lattice_grid_pandas.GRID_VERSION
+
+
+def test_every_vendored_chart_and_router_module_is_the_grid_claimed():
+    """``LatticeChart`` and ``LatticeRouter`` load these offline: each must be present
+    (the base chart module, one per extension chart type, the data router) and
+    each must carry exactly the grid version the wheel reports."""
+    from lattice_grid_jupyter._chart import EXTENSION_TYPES
+
+    charts = _JUPYTER_STATIC / "charts"
+    expected = {"charts.min.js"} | {f"chart-{name}.min.js" for name in EXTENSION_TYPES}
+    assert {p.name for p in charts.glob("*.min.js")} == expected
+    router = _JUPYTER_STATIC / "router" / "data-router.min.js"
+    for module in [*sorted(charts.glob("*.min.js")), router]:
+        assert module.exists(), f"no vendored module at {module}"
+        assert _stamps(module) == {lattice_grid_pandas.GRID_VERSION}, module.name
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
