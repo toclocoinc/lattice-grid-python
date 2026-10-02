@@ -65,6 +65,8 @@ DEFAULT_CARDINALITY_LIMIT = 50
 QUANTILE_SAMPLE = 10_000
 PROFILE_TOP_VALUES = 5
 _CACHE_SIZE = 8
+#: Above this many rows a text column's predicates run on its distinct values.
+FACTORIZE_ABOVE = 256
 
 
 # ----------------------------------------------------------------------------
@@ -142,6 +144,7 @@ class _Col:
             self.kind = "text"
         self._missing = None
         self._float = None
+        self._fact = None
 
     def __len__(self) -> int:
         return len(self.series)
@@ -187,6 +190,52 @@ class _Col:
         ns[self.missing] = np.nan
         return ns / 1e6
 
+    # --- distinct values ------------------------------------------------------
+    def factorized(self) -> tuple[np.ndarray, np.ndarray]:
+        """``(codes, uniques)`` for a text or categorical column, computed once.
+
+        ``codes[i]`` indexes ``uniques`` (the grid's text of each distinct value,
+        in order of first appearance for text), ``-1`` where the value is
+        missing. Every text predicate is evaluated on the distinct values and
+        mapped back through the codes: a 10M-row column with 100k distinct
+        values costs 100k string operations, not 10M.
+        """
+        if self._fact is None:
+            s = self.series
+            if self.kind == "category":
+                codes = s.cat.codes.to_numpy().astype(np.int64)
+                uniq = list(s.cat.categories)
+            else:
+                codes, uniq = pd.factorize(s, use_na_sentinel=True)
+                codes = np.asarray(codes, dtype=np.int64)
+                uniq = list(uniq)
+            self._fact = (codes, np.array([self._text_of(u, False) for u in uniq], dtype=object))
+        return self._fact
+
+    def _number_text(self) -> np.ndarray:
+        """``String(x)`` for every number, vectorised (JavaScript's spelling)."""
+        f = self.floats()
+        if self.kind == "number" and pdt.is_integer_dtype(self.series.dtype) and not self.missing.any():
+            return self.series.astype(str).to_numpy(dtype=object)
+        t = pd.Series(f).astype(str)
+        t = t.str.replace(r"\.0$", "", regex=True).str.replace(r"e([+-])0*(\d)", r"e\1\2", regex=True)
+        t = t.replace({"inf": "Infinity", "-inf": "-Infinity"})
+        out = t.to_numpy(dtype=object)
+        out[np.isnan(f)] = None
+        return out
+
+    def _iso_text(self) -> np.ndarray:
+        """ISO 8601 text per timestamp, as the forward serialisation writes it."""
+        s = self.series
+        if getattr(s.dt, "tz", None) is None:
+            ns = s.to_numpy(dtype="datetime64[ns]")
+            whole = ns.astype("int64")
+            if not (whole[~self.missing] % 1_000_000_000).any():
+                out = np.datetime_as_string(ns, unit="s").astype(object)
+                out[self.missing] = None
+                return out
+        return np.array([None if pd.isna(x) else x.isoformat() for x in s], dtype=object)
+
     # --- text ----------------------------------------------------------------
     def raw_text(self, lower: bool) -> np.ndarray:
         """``String(value)`` per row as the grid would write it; None where missing."""
@@ -198,23 +247,25 @@ class _Col:
             out = np.where(codes >= 0, ctext[np.clip(codes, 0, None)] if len(ctext) else None, None)
             return out.astype(object)
         if self.kind == "number":
-            f = self.floats()
-            out = np.empty(len(f), dtype=object)
-            for i, x in enumerate(f):
-                out[i] = None if x != x else js_number_text(x)
-            return out
+            return self._number_text()
         if self.kind == "bool":
-            vals = s.to_numpy(dtype=object)
-            return np.array([None if m else ("true" if v else "false")
-                             for v, m in zip(vals, self.missing)], dtype=object)
+            f = self.floats()
+            out = np.where(f == 1, "true", "false").astype(object)
+            out[self.missing] = None
+            return out
         if self.kind == "datetime":
-            iso = [None if pd.isna(x) else x.isoformat() for x in s]
+            iso = self._iso_text()
             if lower:
-                iso = [None if x is None else x.lower() for x in iso]
-            return np.array(iso, dtype=object)
+                iso = np.array([None if x is None else x.lower() for x in iso], dtype=object)
+            return iso
+        miss = self.missing
+        if pdt.infer_dtype(s, skipna=True) == "string":
+            # all text: one vectorised pass rather than a Python loop per row
+            out = (s.str.lower() if lower else s).to_numpy(dtype=object, copy=True)
+            out[miss] = None
+            return out
         vals = s.to_numpy(dtype=object)
         out = np.empty(len(vals), dtype=object)
-        miss = self.missing
         for i, v in enumerate(vals):
             out[i] = None if miss[i] else self._text_of(v, lower)
         return out
@@ -257,8 +308,14 @@ def _cmp_mask(values: np.ndarray, op: str, target: float) -> np.ndarray:
         return values >= target
 
 
-def condition_mask(col: _Col, cond: dict) -> np.ndarray:
+def condition_mask(col: _Col, cond: dict, direct: bool = False) -> np.ndarray:
     """Boolean mask for one leaf condition, matching ``compileValuePredicate``."""
+    if not direct and col.kind in ("text", "category") and len(col) > FACTORIZE_ABOVE:
+        # evaluate on the distinct values (plus one missing), map through the codes
+        codes, uniques = col.factorized()
+        small = _Col(col.name, pd.Series(list(uniques) + [None], dtype=object))
+        per_value = condition_mask(small, cond, direct=True)
+        return per_value[np.where(codes < 0, len(uniques), codes)]
     op = str(cond.get("op"))
     value = cond.get("value")
     cs = bool(cond.get("caseSensitive"))
@@ -471,13 +528,23 @@ class PandasEngine:
         n = len(self)
         if not needle:
             return np.ones(n, dtype=bool)
-        numeric_ok = re.fullmatch(r"[0-9.eE+\-infinity]+", needle) is not None
+        numeric_ok = re.fullmatch(r"[0-9.e+\-infinity]+", needle) is not None
+        iso_ok = re.fullmatch(r"[0-9t:.+\-z]+", needle) is not None
         hit = np.zeros(n, dtype=bool)
         for f in self.fields():
             c = self.col(f)
+            # a value whose text cannot contain the needle is never converted
             if c.kind == "number" and not numeric_ok:
-                continue  # a number's text cannot contain this needle
+                continue
+            if c.kind == "datetime" and not iso_ok:
+                continue
             if c.kind == "bool" and needle not in "true" and needle not in "false":
+                continue
+            if c.kind in ("text", "category") and n > FACTORIZE_ABOVE:
+                codes, uniques = c.factorized()
+                low = pd.Series(uniques, dtype=object).str.lower()
+                per_value = low.str.contains(needle, regex=False).fillna(False).to_numpy(dtype=bool)
+                hit |= np.where(codes < 0, False, per_value[np.clip(codes, 0, None)]) if len(uniques) else False
                 continue
             text = c.text_values(lower=True)
             hit |= text.str.contains(needle, regex=False).fillna(False).to_numpy(dtype=bool)
@@ -503,13 +570,20 @@ class PandasEngine:
             v = c.floats()[pos]
             v = np.where(np.isnan(v), 0.0, v)
             return -v if desc else v
-        text = c.raw_text(lower=False)[pos]
-        uniq = pd.unique(pd.Series(text, dtype=object).dropna())
-        # collator order (base letters first, lower case before upper on a tie)
-        ordered = sorted(uniq, key=lambda s: (s.casefold(), s.swapcase()))
-        rank = {s: i for i, s in enumerate(ordered)}
-        r = np.fromiter((rank.get(t, 0) if t is not None else 0 for t in text),
-                        dtype=np.int64, count=len(text))
+        codes, uniques = c.factorized()
+        # collator order (base letters first, lower case before upper on a tie),
+        # decided once per distinct value and read through the codes
+        order = sorted(range(len(uniques)), key=lambda i: (uniques[i].casefold(), uniques[i].swapcase()))
+        rank_of = np.empty(len(uniques) + 1, dtype=np.int64)
+        rank_of[np.array(order, dtype=np.int64)] = np.arange(len(order), dtype=np.int64)
+        # equal texts (two categories spelling the same) share the lowest rank
+        text_rank = {}
+        for i in order:
+            text_rank.setdefault(uniques[i], rank_of[i])
+        for i in range(len(uniques)):
+            rank_of[i] = text_rank[uniques[i]]
+        rank_of[len(uniques)] = 0
+        r = rank_of[np.where(codes < 0, len(uniques), codes)[pos]]
         return -r if desc else r
 
     def positions(self, filters: Any = None, quick: str = "", sort: Any = None) -> np.ndarray:
@@ -608,9 +682,13 @@ class PandasEngine:
     def _group_codes(self, field: str, pos: np.ndarray) -> tuple[np.ndarray, list]:
         """Group codes for the rows at ``pos``, and each code's JSON key."""
         c = self.col(field)
-        vals = c.json_values(pos)
-        codes, uniques = pd.factorize(pd.Series(vals, dtype=object), use_na_sentinel=False)
-        keys = [None if (u is None or (isinstance(u, float) and u != u)) else u for u in uniques]
+        s = c.series if len(pos) == len(c) else c.series.iloc[pos]
+        codes, uniques = pd.factorize(s, use_na_sentinel=True)
+        codes = np.asarray(codes, dtype=np.int64)
+        keys = [_jsonable_scalar(u) for u in list(uniques)]
+        if (codes < 0).any():  # missing values form their own group, keyed null
+            codes = np.where(codes < 0, len(keys), codes)
+            keys.append(None)
         return codes, keys
 
     def grouped_aggregates(self, query: dict, group_by: list, aggregates: list[dict]) -> list[dict]:
@@ -726,24 +804,17 @@ def facet_bounds(c: _Col, kind: str, req: dict) -> dict:
             b.append({"null": True, "label": "Empty"})
         return {"kind": "boolean", "buckets": b}
     if kind == "category":
-        text = c.raw_text(lower=False)
-        s = pd.Series(text, dtype=object)
-        blank = s.isna() | (s == "")
-        nulls = int(blank.sum())
-        present = s[~blank]
-        # tally in first-seen order, then a stable sort by count (Map + Array.sort)
-        counts = present.value_counts(sort=False)
-        first = pd.unique(present)
-        counts = counts.reindex(first)
+        tally, nulls, first = _category_tally(c, None)
         limit = DEFAULT_CARDINALITY_LIMIT
-        if len(counts) > limit:
+        if len(tally) > limit:
             return {"kind": "category", "buckets": [], "suppressed": "cardinality",
-                    "cardinality": int(len(counts))}
-        order = sorted(range(len(counts)), key=lambda i: -int(counts.iloc[i]))
-        buckets = [{"value": _cat_value(c, counts.index[i]), "label": str(counts.index[i])} for i in order]
+                    "cardinality": int(len(tally))}
+        # tally in first-seen order, then a stable sort by count (Map + Array.sort)
+        order = sorted(first, key=lambda t: -tally[t])
+        buckets = [{"value": t, "label": t} for t in order]
         if nulls:
             buckets.append({"null": True, "label": "Empty"})
-        return {"kind": "category", "buckets": buckets, "cardinality": int(len(counts))}
+        return {"kind": "category", "buckets": buckets, "cardinality": int(len(tally))}
 
     vals = c.floats()
     finite = vals[np.isfinite(vals)]
@@ -798,9 +869,35 @@ def facet_bounds(c: _Col, kind: str, req: dict) -> dict:
     return {"kind": kind, "buckets": buckets, "strategy": strategy, "min": vmin, "max": vmax}
 
 
-def _cat_value(c: _Col, text: str) -> Any:
-    """The bucket's value as the grid holds the cell (numbers stay numbers)."""
-    return text
+def _category_tally(c: _Col, mask: np.ndarray | None) -> tuple[dict, int, list]:
+    """Per-text counts (first-seen order), and the blank count, over ``mask``."""
+    if c.kind in ("text", "category") and len(c) > FACTORIZE_ABOVE:
+        codes, uniques = c.factorized()
+        sel = codes if mask is None else codes[mask]
+        present = sel[sel >= 0]
+        counts = np.bincount(present, minlength=len(uniques))
+        seen = pd.unique(present) if c.kind == "category" else np.arange(len(uniques))
+        if c.kind != "category":
+            seen = seen[counts[seen] > 0]
+        tally: dict = {}
+        first: list = []
+        nulls = int((sel < 0).sum())
+        for code in seen:
+            t = uniques[code]
+            if t == "":
+                nulls += int(counts[code])
+                continue
+            if t not in tally:
+                tally[t] = 0
+                first.append(t)
+            tally[t] += int(counts[code])
+        return tally, nulls, first
+    text = pd.Series(c.raw_text(lower=False) if mask is None else c.raw_text(lower=False)[mask], dtype=object)
+    blank = text.isna() | (text == "")
+    present = text[~blank]
+    vc = present.value_counts(sort=False)
+    first = list(pd.unique(present))
+    return {t: int(vc[t]) for t in first}, int(blank.sum()), first
 
 
 def facet_counts(c: _Col, bounds: dict, mask: np.ndarray | None) -> list[int]:
@@ -822,21 +919,19 @@ def facet_counts(c: _Col, bounds: dict, mask: np.ndarray | None) -> list[int]:
             counts[null_at] = int(miss.sum())
         return counts.tolist()
     if kind == "category":
-        text = pd.Series(c.raw_text(lower=False)[sel], dtype=object)
-        blank = text.isna() | (text == "")
-        vc = text[~blank].value_counts()
+        tally, nulls, _ = _category_tally(c, mask)
         rem = next((i for i, b in enumerate(buckets) if b.get("remainder")), -1)
         seen = 0
         for i, b in enumerate(buckets):
             if b.get("null") or b.get("remainder"):
                 continue
-            k = int(vc.get(str(b.get("value")), 0))
+            k = int(tally.get(str(b.get("value")), 0))
             counts[i] = k
             seen += k
         if rem >= 0:
-            counts[rem] = int(vc.sum()) - seen
+            counts[rem] = sum(tally.values()) - seen
         if has_null:
-            counts[null_at] = int(blank.sum())
+            counts[null_at] = nulls
         return counts.tolist()
     f = c.floats()[sel]
     ordered = len(buckets) - 1 if has_null else len(buckets)
@@ -953,12 +1048,13 @@ def _top_values(c: _Col, pos: np.ndarray, k: int = PROFILE_TOP_VALUES) -> list[d
     keep = pos[~c.blank()[pos]]
     if not len(keep):
         return []
-    vals = c.json_values(keep)
-    s = pd.Series(vals, dtype=object)
-    vc = s.value_counts(sort=False)
+    s = c.series if len(keep) == len(c) else c.series.iloc[keep]
+    vc = s.value_counts(sort=False, dropna=True)
+    vc = vc[vc > 0]
     total = int(vc.sum())
-    items = sorted(vc.items(), key=lambda kv: (-int(kv[1]), _default_order(kv[0])))
-    return [{"value": v, "count": int(n), "share": int(n) / total} for v, n in items[:max(1, k)]]
+    items = sorted(((_jsonable_scalar(v), int(n)) for v, n in vc.items()),
+                   key=lambda kv: (-kv[1], _default_order(kv[0])))
+    return [{"value": v, "count": n, "share": n / total} for v, n in items[:max(1, k)]]
 
 
 def _default_order(v: Any):

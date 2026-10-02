@@ -329,3 +329,46 @@ def test_engine_caches_one_order_per_query():
     q = {"sort": [{"col": "score", "dir": "asc"}]}
     a = e.positions(None, "", q["sort"])
     assert e.positions(None, "", q["sort"]) is a     # scrolling re-slices, never re-sorts
+
+
+# --- the distinct-value fast paths agree with the row-by-row path ---------------
+def test_distinct_value_paths_agree_with_row_by_row(monkeypatch):
+    import lattice_grid_jupyter._engine as E
+    r = np.random.default_rng(9)
+    n = 3000
+    words = np.array(["Ada", "ada", "Grace", "linus", "", "Ken", "barbara", "Zoe"], dtype=object)
+    df = pd.DataFrame({
+        "name": words[r.integers(0, len(words), n)],
+        "kind": pd.Categorical(np.array(["x", "Y", "z"])[r.integers(0, 3, n)]),
+        "n": r.integers(0, 100, n),
+        "when": pd.Timestamp("2021-01-01") + pd.to_timedelta(r.integers(0, 10**7, n), unit="s"),
+    })
+    df.loc[r.integers(0, n, 40), "name"] = None
+    queries = [
+        {"filters": {"col": "name", "op": "eq", "value": "ADA"}},
+        {"filters": {"col": "name", "op": "ne", "value": "ada"}},
+        {"filters": {"col": "name", "op": "in", "value": ["Zoe", "ken", None]}},
+        {"filters": {"col": "name", "op": "notContains", "value": "a"}},
+        {"filters": {"col": "name", "op": "blank"}},
+        {"filters": {"col": "kind", "op": "startsWith", "value": "y"}},
+        {"quick": "AR"}, {"quick": "2021-01-0"}, {"quick": "4"},
+        {"sort": [{"col": "name", "dir": "asc"}, {"col": "n", "dir": "desc"}]},
+        {"sort": [{"col": "kind", "dir": "desc"}]},
+    ]
+    fast = PandasEngine(df)
+    monkeypatch.setattr(E, "FACTORIZE_ABOVE", 10**9)
+    slow = PandasEngine(df)
+    for q in queries:
+        q = {**q, "range": {"start": 0, "end": n}}
+        monkeypatch.setattr(E, "FACTORIZE_ABOVE", 256)
+        a = fast.execute(q)
+        monkeypatch.setattr(E, "FACTORIZE_ABOVE", 10**9)
+        b = slow.execute(q)
+        assert a == b, q
+        assert 0 < a["total"]
+    for col in ("name", "kind"):
+        monkeypatch.setattr(E, "FACTORIZE_ABOVE", 256)
+        a = fast.facet({"colId": col, "filters": {"col": "n", "op": "lt", "value": 50}})
+        monkeypatch.setattr(E, "FACTORIZE_ABOVE", 10**9)
+        b = slow.facet({"colId": col, "filters": {"col": "n", "op": "lt", "value": 50}})
+        assert a == b, col
