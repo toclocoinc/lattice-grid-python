@@ -122,7 +122,10 @@ def test_chart_modules_load_only_for_the_type_used():
     roc = LatticeChart(g, type="roc", label="churned", score="p")
     assert bar._modules == [] and sorted(bar._chart_js) == ["charts"]
     assert roc._modules == ["chart-roc"] and sorted(roc._chart_js) == ["chart-roc", "charts"]
-    assert len(bar._chart_js["charts"]) < 500_000 and len(roc._chart_js["chart-roc"]) < 10_000
+    # Tripwires, not budgets: an order-of-magnitude regression fails here. The base charts
+    # module grew past 500 KB in grid 1.86.0 (crosshair, drag to edit, fills and animation
+    # live in it by decision); the grid repo ratchets its real sizes.
+    assert len(bar._chart_js["charts"]) < 900_000 and len(roc._chart_js["chart-roc"]) < 20_000
     cdn = LatticeChart(LatticeGridWidget(frame(20)), type="fan", x="day", y="sales")
     assert cdn._chart_js == {} and cdn._modules == ["chart-fan"]  # the CDN build fetches it by name
 
