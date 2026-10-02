@@ -20,6 +20,14 @@ window.__model = {
   get: k => state[k],
   set: (k, v) => { state[k] = v; window.__sets.push([k, JSON.parse(JSON.stringify(v === undefined ? null : v))]); },
   save_changes: () => {},
+  // the comm (card 1618): a test binds window.__pysend to the real Python widget
+  send: (content) => {
+    window.__sent = (window.__sent || 0) + 1;
+    if (!window.__pysend) return;
+    window.__pysend(content).then((reply) => {
+      if (reply) (L['msg:custom']||[]).slice().forEach(f => f(reply, []));
+    });
+  },
   on: (e, cb) => { (L[e]=L[e]||[]).push(cb); },
   off: (e, cb) => { L[e] = (L[e]||[]).filter(f=>f!==cb); },
 };
@@ -46,3 +54,23 @@ def sets(page, key=None):
     """What the front end has sent to the model so far (optionally one key)."""
     got = page.evaluate("window.__sets")
     return [v for k, v in got if key is None or k == key] if key else got
+
+
+def bind_python(page, widget, delay_s: float = 0.0, log: list | None = None):
+    """Route the front end's comm messages to the real Python widget.
+
+    Must be called before ``page.set_content``. ``delay_s`` holds every answer
+    back (a slow kernel), ``log`` records each request's method.
+    """
+    import time as _time
+
+    def handle(content):
+        if log is not None and isinstance(content, dict):
+            log.append(content.get("method"))
+        if delay_s:
+            _time.sleep(delay_s)
+        if isinstance(content, dict) and content.get("type") == "lg:req":
+            return widget._answer(content)
+        return None
+
+    page.expose_function("__pysend", handle)

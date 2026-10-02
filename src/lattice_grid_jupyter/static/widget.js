@@ -7,6 +7,14 @@
  *   model._data_version -> grid.rows.load(...)  (Python set_data -> grid)
  *   model._row_op       -> grid.rows.apply(...) (Python append/delete -> grid)
  *
+ * Large frames (card 1618): when model._mode is "windowed" the browser holds
+ * no rows. The grid gets a pushdown source whose adapter forwards each query
+ * (a row window, group-by aggregates, distinct values, whole-set statistics,
+ * header-histogram counts, a column profile) to Python over the widget comm as
+ * {type: "lg:req", id, method, payload}; Python answers {type: "lg:res", id,
+ * ok, result|error}. The correlation id pairs each answer with its request, so
+ * answers may arrive in any order and an abandoned request is simply dropped.
+ *
  * The grid bundle loads one of two ways, chosen by model._grid_source:
  *   "cdn"    -> dynamic import() of the published ESM build from jsDelivr.
  *   "vendor" -> the UMD bundle text carried in model._grid_js is injected as a
@@ -30,6 +38,89 @@ function reconstructRows(model) {
     rows[i] = rec;
   }
   return rows;
+}
+
+function rowsFromColumnar(columnar) {
+  const keys = (columnar && columnar["__row_id__"]) || [];
+  const fields = Object.keys(columnar || {}).filter((f) => f !== "__row_id__");
+  const rows = new Array(keys.length);
+  for (let i = 0; i < keys.length; i++) {
+    const rec = { __row_id__: keys[i] };
+    for (let c = 0; c < fields.length; c++) rec[fields[c]] = columnar[fields[c]][i];
+    rows[i] = rec;
+  }
+  return rows;
+}
+
+/**
+ * The comm round trip: request/response paired by a correlation id.
+ * An aborted request rejects at once with the signal's reason; its late answer
+ * (Python cannot be interrupted mid-computation) finds no pending entry and is
+ * dropped.
+ */
+function createCommClient(model) {
+  let seq = 0;
+  const pending = new Map();
+  const onMsg = (msg) => {
+    if (!msg || msg.type !== "lg:res") return;
+    const entry = pending.get(msg.id);
+    if (!entry) return;
+    pending.delete(msg.id);
+    if (msg.ok) entry.resolve(msg.result);
+    else entry.reject(new Error(msg.error || "[lattice] the Python engine failed"));
+  };
+  model.on("msg:custom", onMsg);
+  const ask = (method, payload, signal) => new Promise((resolve, reject) => {
+    if (signal && signal.aborted) { reject(signal.reason || new Error("aborted")); return; }
+    const id = ++seq;
+    pending.set(id, { resolve, reject });
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        if (pending.delete(id)) reject(signal.reason || new Error("aborted"));
+      }, { once: true });
+    }
+    model.send({ type: "lg:req", id, method, payload });
+  });
+  ask.dispose = () => { model.off("msg:custom", onMsg); pending.clear(); };
+  ask.pending = () => pending.size;
+  return ask;
+}
+
+/** A query as plain JSON (no signal, no functions). */
+const plain = (q) => JSON.parse(JSON.stringify(q, (k, v) => (k === "signal" ? undefined : v)));
+
+/** The pushdown adapter whose engine is Python (the grid's adapter contract). */
+function pythonAdapter(ask, caps) {
+  return {
+    name: "python",
+    capabilities: {
+      filter: "tree",
+      operators: caps.operators || [],
+      sort: "multi",
+      quick: true,
+      range: true,
+      total: true,
+      group: false,
+      pivot: false,
+      aggregates: caps.aggregates || [],
+      mutate: caps.editable ? { update: true, returning: "none" } : false,
+    },
+    async execute(query, request) {
+      const r = await ask("execute", { query: plain(query) }, request && request.signal);
+      return { rows: rowsFromColumnar(r.columnar), total: r.total };
+    },
+    executeGroupedAggregates(query, groupBy, aggregates, opts) {
+      return ask("grouped", { query: plain(query), groupBy: plain(groupBy), aggregates: plain(aggregates) },
+        opts && opts.signal);
+    },
+    executeAggregates(query, aggregates) {
+      return ask("aggregates", { query: plain(query), aggregates: plain(aggregates) });
+    },
+    async mutate(op, request) {
+      const r = await ask("mutate", { op: plain(op) }, request && request.signal);
+      return r || { ok: true };
+    },
+  };
 }
 
 async function loadGrid(model) {
@@ -89,18 +180,85 @@ async function render({ model, el }) {
   const licence = model.get("licence");
   let appliedOptions = model.get("_grid_options") || {};
   const initialState = model.get("state");
+
+  // --- large frames: a windowed source answered by Python (card 1618) --------
+  const ask = createCommClient(model);
+  const windowed = () => model.get("_mode") === "windowed";
+  const pageSize = () => model.get("_page_size") || 100;
+  const pushdown = () => mod.createPushdownSource({
+    adapter: pythonAdapter(ask, model.get("_engine_caps") || {}),
+    pageSize: pageSize(),
+    edit: !!(model.get("_engine_caps") || {}).editable,
+  });
+  // Header histograms over a windowed source need counts the browser cannot
+  // compute: the grid asks its `facets.provider`, which asks Python.
+  const facetProvider = (req) => ask("facet", {
+    colId: req.colId, filters: req.filters ? plain(req.filters) : null, quick: req.quick || "",
+    bounds: req.bounds || null, buckets: req.buckets, strategy: req.strategy, granularity: req.granularity,
+  });
+  const withProvider = (opts) => {
+    if (!windowed() || !opts.facets) return opts;
+    const f = opts.facets === true ? { enabled: true } : opts.facets;
+    return { ...opts, facets: { ...f, provider: facetProvider } };
+  };
+  const dataConfig = () => (windowed()
+    ? { source: pushdown() }
+    : { rows: reconstructRows(model) });
+
   const grid = createGrid(host, {
     selection: "multiple",
     edit: true,
-    ...appliedOptions,
+    ...withProvider(appliedOptions),
     // Python owns the data, the row key and the column set.
     columns: model.get("_columns"),
-    rows: reconstructRows(model),
+    ...dataConfig(),
     rowKey: model.get("_row_key") || "__row_id__",
     ...(initialState && Object.keys(initialState).length ? { state: initialState } : {}),
     ...(licence ? { licence } : {}),
   });
   host.__latticeGrid = grid; // handle for tests and notebook-side debugging
+  host.__latticeAsk = ask;
+
+  // Profile statistics over a windowed source: the grid's own profile reads the
+  // rows it holds (a window), so the Statistics panel's profile is answered by
+  // Python over the whole frame instead. Shadowed on this grid instance only,
+  // never on the prototype; every other statistic is the grid's own.
+  const profiles = new Map();
+  let profilesFor = "";
+  const profileScope = () => JSON.stringify([grid.state.get().filters || null, grid.state.get().quick || ""]);
+  const repaintStats = () => {
+    const dock = grid.toolPanel;
+    const open = host.querySelector('[data-panel="statistics"], .lat-statistics');
+    if (dock && typeof dock.open === "function" && open) dock.open("statistics");
+  };
+  const realStatistics = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(grid), "statistics")
+    || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Object.getPrototypeOf(grid)), "statistics");
+  if (realStatistics && realStatistics.get) {
+    Object.defineProperty(grid, "statistics", {
+      configurable: true,
+      get() {
+        const real = realStatistics.get.call(grid);
+        if (!windowed()) return real;
+        return {
+          ...real,
+          profile(colId) {
+            const scope = profileScope();
+            if (scope !== profilesFor) { profiles.clear(); profilesFor = scope; }
+            const hit = profiles.get(colId);
+            if (hit && hit !== "pending") return hit;
+            if (!hit) {
+              profiles.set(colId, "pending");
+              const st = grid.state.get();
+              ask("profile", { colId, filters: st.filters ? plain(st.filters) : null, quick: st.quick || "" })
+                .then((p) => { if (profilesFor === scope) { profiles.set(colId, p); repaintStats(); } })
+                .catch(() => { if (profiles.get(colId) === "pending") profiles.delete(colId); });
+            }
+            return null;
+          },
+        };
+      },
+    });
+  }
 
   // Surface the resolved licence state for debugging / the smoke test.
   try {
@@ -112,6 +270,9 @@ async function render({ model, el }) {
 
   // --- grid edit -> DataFrame -------------------------------------------------
   const onCellChanged = (e) => {
+    // Over the windowed source an edit reaches Python through the adapter's
+    // `mutate` (the pushdown write-back contract), not through this trait.
+    if (windowed()) return;
     model.set("_edit", {
       key: String(e.key),
       colId: e.colId,
@@ -124,12 +285,20 @@ async function render({ model, el }) {
   grid.on("cell:changed", onCellChanged);
 
   // --- Python set_data(df) -> full reload ------------------------------------
+  let shownMode = model.get("_mode") || "client";
   const onData = () => {
-    const rows = reconstructRows(model);
-    if (typeof grid.rows.load === "function") {
+    const mode = model.get("_mode") || "client";
+    profiles.clear();
+    if (mode === "windowed") {
+      // A new windowed source: every cached window, count and histogram goes.
+      grid.set("source", pushdown());
+    } else if (shownMode === "windowed") {
+      grid.set("source", { mode: "memory", rows: reconstructRows(model) });
+    } else if (typeof grid.rows.load === "function") {
       // load() keeps the column layout; set_data assumes the same schema.
-      grid.rows.load(rows);
+      grid.rows.load(reconstructRows(model));
     }
+    shownMode = mode;
   };
   model.on("change:_data_version", onData);
 
@@ -137,6 +306,7 @@ async function render({ model, el }) {
   const onRowOp = () => {
     const op = model.get("_row_op");
     if (!op || !op.op) return;
+    if (windowed()) return; // Python re-sources the windowed grid itself (_data_version)
     if (typeof grid.rows.apply !== "function") return;
     if (op.op === "add") {
       grid.rows.apply({ add: op.rows || [], ...(op.at != null ? { at: op.at } : {}) });
@@ -167,6 +337,9 @@ async function render({ model, el }) {
     model.save_changes();
   };
   const sendView = () => {
+    // Windowed: the view is the whole frame under `state`; Python computes it
+    // lazily from the state it already has. No keys cross the comm.
+    if (windowed()) return;
     const keys = [];
     grid.rows.forEach((row) => { if (row.data != null) keys.push(String(row.key)); });
     if (same(keys, model.get("_view_keys"))) return;
@@ -232,6 +405,7 @@ async function render({ model, el }) {
     for (const k of Object.keys(appliedOptions)) if (!(k in next)) values[k] = undefined;
     appliedOptions = next;
     if (!Object.keys(values).length) return;
+    if ("facets" in values && values.facets) values.facets = withProvider({ facets: values.facets }).facets;
     if (typeof grid.setAll === "function") grid.setAll(values);
     else for (const k of Object.keys(values)) grid.set(k, values[k]);
     setTimeout(reportWarnings, 0);
@@ -239,6 +413,7 @@ async function render({ model, el }) {
   model.on("change:_grid_options", onOptions);
 
   return () => {
+    ask.dispose();
     model.off("change:_grid_options", onOptions);
     model.off("change:state", onState);
     dSelection.cancel(); dView.cancel(); dState.cancel();
