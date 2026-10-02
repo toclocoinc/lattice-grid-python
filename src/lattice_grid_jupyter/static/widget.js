@@ -226,9 +226,11 @@ async function render({ model, el }) {
   const profiles = new Map();
   let profilesFor = "";
   const profileScope = () => JSON.stringify([grid.state.get().filters || null, grid.state.get().quick || ""]);
+  // Repaint the Statistics panel when Python's profile lands -- only if that
+  // panel is the one open (its tab is selected); never open it unasked.
   const repaintStats = () => {
     const dock = grid.toolPanel;
-    const open = host.querySelector('[data-panel="statistics"], .lat-statistics');
+    const open = host.querySelector('[role="tab"][data-panel="statistics"][aria-selected="true"]');
     if (dock && typeof dock.open === "function" && open) dock.open("statistics");
   };
   const realStatistics = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(grid), "statistics")

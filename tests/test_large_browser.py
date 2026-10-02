@@ -383,3 +383,16 @@ def test_real_browser_statistics_panel_shows_pythons_profile():
             assert texts[1] == texts[0]
         finally:
             s.close()
+
+
+def test_real_browser_profile_answer_does_not_open_a_closed_panel():
+    w = LatticeGridWidget(frame(), offline=True, windowed=True, profile=True)
+    with sync_playwright() as p:
+        s = Session(p)
+        try:
+            page = s.open(w)
+            page.evaluate(f"{GRID}.statistics.profile('score')")      # asked by code, panel closed
+            page.wait_for_function(f"!!{GRID}.statistics.profile('score')", timeout=8000)
+            assert page.evaluate("!!document.querySelector('[role=tab][data-panel=statistics][aria-selected=true]')") is False
+        finally:
+            s.close()
