@@ -49,6 +49,8 @@ from ._view import LazyView
 #: Row count at and above which the widget switches to the windowed source.
 DEFAULT_LARGE_THRESHOLD = 100_000
 
+_COPY_ON_WRITE = int(pd.__version__.split(".")[0]) >= 3
+
 _HERE = pathlib.Path(__file__).parent
 _STATIC = _HERE / "static"
 
@@ -212,7 +214,9 @@ class LatticeGridWidget(anywidget.AnyWidget):
         if isinstance(data, pd.DataFrame):
             n = len(data)
             if self._decide_windowed(n):
-                frame = data.copy()
+                # pandas >= 3 is copy-on-write: a shallow copy costs nothing and an
+                # edit still never reaches the caller's frame. Older pandas: copy.
+                frame = data.copy(deep=not _COPY_ON_WRITE)
                 return frame, PandasEngine(frame)
             return data.copy(), None
         from ._arrow_engine import ArrowEngine, is_parquet_path, is_polars_frame

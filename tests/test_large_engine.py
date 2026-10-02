@@ -238,13 +238,15 @@ def test_profile_over_the_whole_frame():
 
 # --- edits, selected, view ----------------------------------------------------
 def test_edit_over_the_windowed_source_reaches_the_frame():
-    w = LatticeGridWidget(frame(60), windowed=True)
+    original = frame(60)
+    w = LatticeGridWidget(original, windowed=True)
     assert w._engine_caps["editable"] is True
     assert req(w, "mutate", op={"kind": "update", "key": "4", "patch": {"score": "77"}}) == {"ok": True}
     assert w.df["score"].iloc[4] == 77 and w.df["score"].dtype == np.int64
     res = req(w, "execute", query={"filters": {"col": "score", "op": "eq", "value": 77},
                                    "range": {"start": 0, "end": 9}})
     assert 4 in keys_of(res)  # caches dropped: the edit is visible to the next query
+    assert original["score"].iloc[4] != 77  # the caller's frame is never written
 
 
 def test_selected_and_lazy_view_when_windowed():

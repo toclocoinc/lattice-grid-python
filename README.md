@@ -193,22 +193,77 @@ edge, click a cell, and the panel shows the present/missing/distinct counts, the
 twelve numeric figures and a histogram (or, for text, the top values), all
 following the filters.
 
-## Large DataFrames
+## Large data
 
-The frame is serialized **column-major** (`{field: [values...]}`), not as a
-list-of-dicts:
+Below **100,000 rows** the widget sends the whole frame to the browser
+(column-major, vectorized) and the grid filters, sorts and counts it there.
+**At 100,000 rows and above** it switches to a **windowed source**: no rows are
+sent up front, and
 
-* field names are not repeated per row (roughly halves the payload for wide frames);
-* each column is built with a **vectorized** pass, not `DataFrame.iterrows()` —
-  which is the real reason a naive list-of-dicts build stalls at 100k rows;
-* the grid's memory source **virtualizes rendering**, so only the visible window
-  is ever in the DOM.
+* the browser asks Python for each **window of rows as the person scrolls**
+  (100 rows per request; the grid's loading rows and loading banner show while
+  a window is in flight);
+* **sort, filter, quick search, group-by subtotals, the distinct values a
+  filter menu lists, header histograms and column profiles** are computed in
+  Python over the **whole frame**, and only the results cross the comm: a
+  window of rows, a list of groups, a set of bucket counts, a profile;
+* `widget.selected` still returns the selected rows as a DataFrame, and
+  `widget.view` returns a **lazy handle** instead of materialising millions of
+  rows (see below).
 
-This handles a **100,000-row** frame without freezing (see `tests/` and the demo
-notebook). For frames far larger than fit in the browser (millions of rows), the
-grid also exposes `paged` / `remote` / `stream` source modes whose `fetch`
-callback would page back into the Python kernel over the comm — that is the
-documented extension point, not wired in this release.
+```python
+w = LatticeGridWidget(big_df)                          # 10M rows: windowed automatically
+w = LatticeGridWidget(df, large_threshold=1_000_000)   # move the threshold
+w = LatticeGridWidget(df, windowed=True)               # always windowed (False: never)
+w.windowed                                             # which mode this widget is in
+
+w = LatticeGridWidget("events.parquet")                # a Parquet file, read by DuckDB
+w = LatticeGridWidget(polars_df)                       # a Polars frame (no copy into pandas)
+```
+
+**`view` above the threshold** is a `LazyView`: nothing is computed until you
+ask, and then only what you ask for.
+
+```python
+v = w.view          # <LazyView 1,204,331 of 10,000,000 rows (lazy) ...>
+len(v)              # how many rows pass the grid's filters
+v.head(20)          # the first 20, in the grid's sort order, as a DataFrame
+v.slice(1000, 1100) # any range of the view
+v.to_pandas()       # the whole view, explicitly (may be large)
+v.positions()       # row positions in the source frame
+```
+
+`w.observe(fn, names="view")` fires when the grid's filter, quick search or
+sort changes, with a fresh `LazyView`.
+
+**Measured on the development machine (16 cores) for 10,000,000 rows x 20
+columns** (JupyterLab 4, headless Chrome): see the table in
+`docs/large-data.md`.
+
+**What to know:**
+
+* **Inputs.** A pandas DataFrame (editable: a cell edit reaches `w.df`); a
+  Parquet path or a Polars DataFrame (read-only), held as one Arrow table
+  (a Parquet file is read by DuckDB's parallel reader) and converted to
+  pandas one column at a time, only when a query touches that column. These
+  need `pip install "lattice-grid-jupyter[large]"` (duckdb, pyarrow).
+* **One set of semantics.** The Python engine follows the grid's own kernels:
+  text comparisons ignore case unless the filter says `caseSensitive`, missing
+  values sort last in both directions, ties keep frame order, a `ne` /
+  `notContains` matches a missing value. Tests hold the windowed answers equal
+  to the grid's client-side answers on the same frame.
+* **Differences from the client path.** Quick search matches each field's
+  value text (`1234.5`, an ISO timestamp), not the formatted cell text, and a
+  term cannot span two columns. Text sorts by case-folded order, an
+  approximation of the browser's collator for non-ASCII text. Date histograms
+  bucket in UTC. Pivoting is not pushed: a pivot over a windowed grid is
+  refused by the grid by name (`pushdown:pivot-unsupported`).
+* **Cost.** The first query that touches a column over 10M rows converts or
+  scans it (a sort on a text column is the slowest: seconds); the order is then
+  cached, so scrolling through a sorted view only slices it. Each new filter is
+  one pass over the frame.
+* `append_rows` / `delete_rows` / `set_data` work above the threshold (the grid
+  re-sources itself); `set_data` across the threshold switches the mode.
 
 ## Licensing
 
@@ -252,8 +307,9 @@ skipped (never faked).
   Jupyter's static handler would keep saved notebooks small — a future option.
 * `set_data` assumes the same schema (columns/index shape). A different schema
   should use a fresh widget.
-* Binary (Arrow/typed-array) transfer would beat columnar-JSON for very wide
-  numeric frames; columnar-JSON is what ships here.
+* Windows travel as columnar JSON. Arrow IPC was measured (card 1618) and is
+  faster only for bulk transfers the windowed design never makes; see
+  `docs/large-data.md`.
 
 ---
 Built with [Lattice Grid](https://www.latticegrid.dev), a JavaScript data grid with a Data Router: one live feed keeps grids, charts, boards, Gantt and KPI tiles in step. [Documentation](https://www.latticegrid.dev/docs/) · [Demos](https://www.latticegrid.dev/demos/) · [Licence](https://www.latticegrid.dev/licence/)

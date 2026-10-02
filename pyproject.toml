@@ -17,12 +17,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# large data from a Parquet file or a Polars frame (card 1618)
+large = [
+    "duckdb>=1.0",
+    "pyarrow>=14",
+]
 dev = [
     "pytest>=7",
     "playwright>=1.40",
     "jupyterlab>=4",
     "ipykernel",
     "nbconvert",
+    "duckdb>=1.0",
+    "pyarrow>=14",
+    "polars>=1.0",
 ]
 
 [project.urls]
