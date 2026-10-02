@@ -225,6 +225,33 @@ the grouped aggregates Python already computes (`bar`, `line`, `pie`, ... with `
 the rows. One example per type, the large-grid rules and the layout notes are in
 [`docs/charts.md`](docs/charts.md).
 
+## The data router
+
+```python
+from lattice_grid_jupyter import LatticeGridWidget, LatticeRouter
+
+router = LatticeRouter(
+    sources={"customer": {"data": customers, "key": "customer_id",
+                          "join": [{"from": "txn", "many": True, "foreign_key": "customer_id",
+                                    "aggregate": {"spend": {"fn": "sum", "field": "amount"}}}]},
+             "txn": {"data": txns, "key": "txn_id"}},
+    routes={"customer": "customer"},
+)
+w = LatticeGridWidget(router, route="customer")   # the shaped rows
+router.update("txn", new_txns)                    # a keyed diff: only the affected parents re-emit
+w.view                                            # the shaped rows as a DataFrame
+```
+
+`LatticeRouter(sources=, routes=)` declares DataFrames as sources of the grid's own
+**data router** with its own join (lookup, collect, rollup onto the parent), spread,
+unnest and field-coercion specs as plain dicts (`snake_case` mapped, an unknown key warned
+by name, functions refused). The router **runs in the browser on the grid's module**; Python
+does not reimplement join semantics. `router.update(source, df)` sends a keyed diff and
+`widget.router_stats` counts the rows the route re-emitted. `widget.view` is the shaped
+rows (after the grid's filters) as a DataFrame, so a feature table goes straight into a
+model. The spec reference and a feature-table recipe on a seeded customers / transactions /
+labels fixture are in [`docs/router.md`](docs/router.md).
+
 ## Large data
 
 Below **100,000 rows** the widget sends the whole frame to the browser

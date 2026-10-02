@@ -45,6 +45,7 @@ from . import _options as O
 from . import _serialize as S
 from ._engine import AGGREGATES, OPERATORS, PandasEngine
 from ._options import LatticeGridWarning
+from ._router import LatticeRouter, shaped_frame
 from ._view import LazyView
 
 #: Row count at and above which the widget switches to the windowed source.
@@ -91,6 +92,12 @@ class LatticeGridWidget(anywidget.AnyWidget):
     _page_size = traitlets.Int(100).tag(sync=True)                    # rows per window request
     _engine_caps = traitlets.Dict().tag(sync=True)                    # operators / aggregates
 
+    # the data router (card 1620): the grid shows a route's shaped rows
+    _router = traitlets.Dict().tag(sync=True)                         # sources + specs for the browser router
+    _router_js = traitlets.Unicode("").tag(sync=True)                 # vendored data-router module (offline)
+    _shaped = traitlets.Dict().tag(sync=True)                         # browser -> Python: the route's rows, columnar
+    _router_stats = traitlets.Dict().tag(sync=True)                   # browser -> Python: rows the route has emitted
+
     # options / state, both directions
     _grid_options = traitlets.Dict().tag(sync=True)                   # camelCase, effective
     state = traitlets.Dict().tag(sync=True)
@@ -102,7 +109,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
     def __init__(
         self,
-        df: pd.DataFrame,
+        df: pd.DataFrame | LatticeRouter,
         licence: str = "",
         height: int = 360,
         offline: bool = False,
@@ -116,12 +123,23 @@ class LatticeGridWidget(anywidget.AnyWidget):
         large_threshold: int = DEFAULT_LARGE_THRESHOLD,
         windowed: bool | None = None,
         page_size: int = 100,
+        route: str | None = None,
         **kwargs: Any,
     ):
         self.large_threshold = int(large_threshold)
         self._force_windowed = windowed
         self._engine = None
-        frame, engine = self._adopt(df)
+        self._router_obj: LatticeRouter | None = None
+        self.route = route
+        if isinstance(df, LatticeRouter):
+            if route is None and len(df.routes) == 1:
+                route = self.route = next(iter(df.routes))
+            if route not in df.routes:
+                raise ValueError(f"LatticeGridWidget(router, route=...) needs one of {sorted(df.routes)}, got {route!r}")
+            self._router_obj = df
+            frame, engine = pd.DataFrame(), None
+        else:
+            frame, engine = self._adopt(df)
         self._df = frame
         # Stable, monotonic per-row keys. Never reused, never renumbered, so the
         # grid's key set and the DataFrame stay aligned across append/delete.
@@ -134,13 +152,16 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
         source = "vendor" if offline else "cdn"
         grid_js = grid_css = ""
+        router_js = ""
         if offline:
             grid_js, grid_css = _load_vendored()
+            if self._router_obj is not None:
+                router_js = (_STATIC / "router" / "data-router.min.js").read_text(encoding="utf-8")
 
         self._column_overrides = list(columns) if columns else []
         self._flags = self._flag_options(profile, histograms, pivot)
         self._flag_state = self._flag_state_for(pivot)
-        if self._column_overrides:  # validate early, name what is wrong
+        if self._column_overrides and self._router_obj is None:  # validate early, name what is wrong
             O.merge_columns(self._built_columns(), self._column_overrides)
         eff = O.grid_options(options, self._flags)
         seed_state = {**self._flag_state, **(state or {})}
@@ -153,6 +174,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
             _grid_version=grid_version,
             _grid_js=grid_js,
             _grid_css=grid_css,
+            _router_js=router_js,
             _grid_options=eff,
             options=dict(options or {}),
             state=seed_state,
@@ -162,6 +184,9 @@ class LatticeGridWidget(anywidget.AnyWidget):
         self._row_key = S.ROW_KEY
         self._push_frame()
         self.on_msg(self._on_custom)
+        if self._router_obj is not None:
+            self.observe(self._on_shaped, names="_shaped")
+            self._router_obj._attach(self)
         self.observe(self._on_state_for_view, names="state")
         self.observe(self._on_edit, names="_edit")
         self.observe(self._on_options, names="options")
@@ -256,6 +281,14 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
     # --- DataFrame -> grid -----------------------------------------------------
     def _push_frame(self) -> None:
+        if self._router_obj is not None:
+            # the browser router shapes the rows and infers the columns; Python's column
+            # entries are overrides it layers on top (matched on field)
+            self._columns = [O.map_keys(dict(c), "columns[]") for c in self._column_overrides]
+            self._columnar = {}
+            self._mode = "router"
+            self._router = self._router_obj._payload(self.route)
+            return
         self._columns = O.merge_columns(self._built_columns(), self._column_overrides)
         if self._windowed:
             # No rows up front: the grid asks for each window as it scrolls.
@@ -282,6 +315,24 @@ class LatticeGridWidget(anywidget.AnyWidget):
     def windowed(self) -> bool:
         """True when the grid is a windowed view answered by Python (large data)."""
         return self._windowed
+
+    # --- the data router: shaped rows come back from the browser -------------------
+    def _on_shaped(self, change: dict) -> None:
+        columnar = change["new"] or {}
+        self._keys = [str(k) for k in columnar.get(S.ROW_KEY, [])]
+        self._df = shaped_frame(columnar, self._router_obj._date_fields())
+
+    @property
+    def router_stats(self) -> dict:
+        """What the route has emitted to this grid: ``batches``, ``added``, ``updated``,
+        ``removed`` (cumulative, counted in the browser). Take the difference around a
+        ``router.update(...)`` to see exactly which parents re-emitted."""
+        return dict(self._router_stats)
+
+    def _no_router(self, what: str) -> None:
+        if self._router_obj is not None:
+            raise TypeError(f"{what} is not available on a router-backed grid: its rows are the router's "
+                            "shaped rows. Change the data with router.update(source, df).")
 
     # --- comm: the grid's pushdown queries ---------------------------------------
     def _on_custom(self, _widget: Any, content: Any, _buffers: Any = None) -> None:
@@ -414,6 +465,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
     # --- Python -> grid: live updates -----------------------------------------
     def set_data(self, df: pd.DataFrame) -> None:
         """Replace the whole DataFrame and repaint the grid (fresh keys, full reload)."""
+        self._no_router("set_data")
         frame, engine = self._adopt(df)
         self._df = frame
         self._engine = engine
@@ -424,6 +476,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
     def append_rows(self, rows: pd.DataFrame | Iterable[dict]) -> list[str]:
         """Append rows to the DataFrame and the grid (incremental). Returns new keys."""
+        self._no_router("append_rows")
         new = rows.copy() if isinstance(rows, pd.DataFrame) else pd.DataFrame(list(rows))
         new = new.reindex(columns=self.df.columns)
         if self._windowed:
@@ -454,6 +507,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
     def delete_rows(self, keys: str | Iterable[str]) -> list[str]:
         """Delete rows by their stable grid key (incremental). Returns removed keys."""
+        self._no_router("delete_rows")
         if isinstance(keys, (str, int)):
             keys = [keys]
         keys = [str(k) for k in keys]

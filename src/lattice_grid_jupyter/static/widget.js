@@ -123,6 +123,148 @@ function pythonAdapter(ask, caps) {
   };
 }
 
+
+// --- the data router in the notebook (card 1620) ------------------------------
+// The router is the grid's own module, run in the browser: Python sends the
+// sources (columnar) and the specs (plain data), the module joins / rolls up /
+// spreads / unnests / coerces them, and the grid shows the route's shaped rows.
+// Nothing here reimplements those semantics; this file only wires the module to
+// the widget (load, keyed diffs from Python, counting what the route re-emits,
+// reporting the shaped rows back).
+
+function injectScriptText(text) {
+  const s = document.createElement("script");
+  s.textContent = text;
+  document.head.appendChild(s);
+}
+
+function loadScriptUrl(url) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = url;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`[lattice] could not load ${url}`));
+    document.head.appendChild(s);
+  });
+}
+
+async function loadRouterLib(model) {
+  const have = () => window.LatticeGridDataRouter && typeof window.LatticeGridDataRouter.createDataRouter === "function";
+  if (!have()) {
+    if ((model.get("_grid_source") || "cdn") === "vendor") injectScriptText(model.get("_router_js") || "");
+    else await loadScriptUrl(`${CDN_BASE(model.get("_grid_version"))}/modules/data-router.min.js`);
+  }
+  if (!have()) throw new Error("[lattice] the data-router module did not load");
+  return window.LatticeGridDataRouter;
+}
+
+/**
+ * A COLLECT join's `select` is a function in the module (fromRow, leftRow) => value; plain data
+ * cannot carry one, so Python sends a field name (collect that field) or a list of names (collect
+ * an object of those fields) and it becomes the function here. Everything else in a join passes
+ * to the module exactly as declared.
+ */
+function withSelectFns(options) {
+  const fix = (j) => {
+    if (!j || typeof j !== "object") return j;
+    const out = { ...j };
+    if (out.many && out.as && out.select !== undefined && typeof out.select !== "function") {
+      const sel = out.select;
+      out.select = typeof sel === "string" ? (row) => row[sel]
+        : (row) => Object.fromEntries((Array.isArray(sel) ? sel : Object.keys(sel)).map((f) => [Array.isArray(sel) ? f : sel[f], row[f]]));
+    }
+    return out;
+  };
+  const joins = (js) => (Array.isArray(js) ? js.map(fix) : fix(js));
+  const unnests = (us) => (Array.isArray(us) ? us.map(unnest) : unnest(us));
+  const unnest = (u) => ({ ...u, ...(u.join ? { join: joins(u.join) } : {}), ...(u.unnest ? { unnest: unnests(u.unnest) } : {}) });
+  return { ...options, ...(options.join ? { join: joins(options.join) } : {}), ...(options.unnest ? { unnest: unnests(options.unnest) } : {}) };
+}
+
+/** Rows (objects) from a columnar payload, stamped with the source id the router partitions on. */
+function routerRows(columnar, sourceId) {
+  const keys = (columnar && columnar["__row_id__"]) || [];
+  const fields = Object.keys(columnar || {}).filter((f) => f !== "__row_id__");
+  const rows = new Array(keys.length);
+  for (let i = 0; i < keys.length; i++) {
+    const rec = { __row_id__: keys[i], __source: sourceId };
+    for (let c = 0; c < fields.length; c++) rec[fields[c]] = columnar[fields[c]][i];
+    rows[i] = rec;
+  }
+  return rows;
+}
+
+const HIDDEN_FIELDS = new Set(["__row_id__", "__source", "__orphan"]);
+
+/** One column per field of the shaped rows (first-seen order), typed from the values; Python's overrides layer on top. */
+function inferColumns(rows, overrides) {
+  const order = [];
+  const kind = new Map();
+  for (const row of rows) {
+    for (const f of Object.keys(row)) {
+      if (HIDDEN_FIELDS.has(f)) continue;
+      if (!kind.has(f)) { kind.set(f, null); order.push(f); }
+      if (kind.get(f) === null && row[f] !== null && row[f] !== undefined) {
+        const v = row[f];
+        kind.set(f, typeof v === "number" ? "number" : typeof v === "boolean" ? "boolean"
+          : v instanceof Date ? "timestamp" : Array.isArray(v) ? "list" : "text");
+      }
+    }
+  }
+  const cols = order.map((f) => ({ field: f, title: f, type: kind.get(f) || "text", edit: false }));
+  const byField = new Map(cols.map((c, i) => [c.field, i]));
+  for (const o of overrides || []) {
+    const i = byField.get(String(o.field !== undefined ? o.field : o.id));
+    if (i !== undefined) cols[i] = { ...cols[i], ...o };
+  }
+  return cols;
+}
+
+/**
+ * Build the browser router for this widget and load its sources. Returns the
+ * shaped rows of the widget's route plus the hooks the grid wiring needs.
+ */
+async function startRouter(model) {
+  const lib = await loadRouterLib(model);
+  const spec = model.get("_router") || {};
+  const route = spec.route;
+  const router = lib.createDataRouter({ key: "__source", rowKey: "__row_id__" });
+  const mirror = new Map();           // every row the route holds, by key
+  const stats = { batches: 0, added: 0, updated: 0, removed: 0 };
+  let sink = null;                    // the grid, once it exists
+  let onChange = () => {};
+  router.subscribe(route, (change) => {
+    for (const r of change.add || []) mirror.set(String(r.__row_id__), r);
+    for (const r of change.update || []) mirror.set(String(r.__row_id__), r);
+    for (const k of change.remove || []) mirror.delete(String(k));
+    stats.batches += 1;
+    stats.added += (change.add || []).length;
+    stats.updated += (change.update || []).length;
+    stats.removed += (change.remove || []).length;
+    if (sink) sink(change);
+    onChange(change);
+  });
+  const handles = {};
+  const ids = Object.keys(spec.sources || {});
+  for (const id of ids) handles[id] = router.addSource(id, { key: true, ...withSelectFns(spec.sources[id].options || {}) });
+  for (const id of spec.loadOrder || ids) handles[id].load(routerRows(spec.sources[id].columnar, id));
+  return {
+    router, handles, stats, mirror,
+    rows: () => [...mirror.values()],
+    attach(grid, onBatch) { sink = (change) => grid.rows.apply({ add: change.add || [], update: change.update || [], remove: change.remove || [] }); onChange = onBatch; },
+    /** A keyed diff from Python: upserts (added + changed rows) and deletes, for one source. */
+    diff(msg) {
+      const h = handles[msg.source];
+      if (!h) return;
+      const deltas = [];
+      for (const r of routerRows(msg.upsert, msg.source)) deltas.push({ op: "upsert", row: r });
+      for (const k of msg.remove || []) deltas.push({ op: "delete", row: { __row_id__: k, __source: msg.source } });
+      h.apply(deltas);
+    },
+    destroy() { try { router.destroy(); } catch (e) { /* ignore */ } },
+  };
+}
+
 async function loadGrid(model) {
   const source = model.get("_grid_source") || "cdn";
 
@@ -201,16 +343,18 @@ async function render({ model, el }) {
     const f = opts.facets === true ? { enabled: true } : opts.facets;
     return { ...opts, facets: { ...f, provider: facetProvider } };
   };
+  // The data router (card 1620): the shaped rows of a route are this grid's rows.
+  const routed = model.get("_mode") === "router" ? await startRouter(model) : null;
   const dataConfig = () => (windowed()
     ? { source: pushdown() }
-    : { rows: reconstructRows(model) });
+    : routed ? { rows: routed.rows() } : { rows: reconstructRows(model) });
 
   const grid = createGrid(host, {
     selection: "multiple",
-    edit: true,
+    edit: !routed,   // shaped rows are derived: an edit cannot be inverted onto a source row
     ...withProvider(appliedOptions),
-    // Python owns the data, the row key and the column set.
-    columns: model.get("_columns"),
+    // Python owns the data, the row key and the column set (a router's columns come from its shaped rows).
+    columns: routed ? inferColumns(routed.rows(), model.get("_columns")) : model.get("_columns"),
     ...dataConfig(),
     rowKey: model.get("_row_key") || "__row_id__",
     ...(initialState && Object.keys(initialState).length ? { state: initialState } : {}),
@@ -218,6 +362,38 @@ async function render({ model, el }) {
   });
   host.__latticeGrid = grid; // handle for tests and notebook-side debugging
   host.__latticeAsk = ask;
+  let routerOff = () => {};
+  if (routed) {
+    host.__latticeRouter = routed;
+    let known = new Set(grid.columns.all().map((c) => c.field));
+    let shapedTimer = null;
+    const reportShaped = () => {
+      shapedTimer = null;
+      const rows = routed.rows();
+      const fields = [];
+      const seen = new Set();
+      for (const r of rows) for (const f of Object.keys(r)) if (f !== "__row_id__" && f !== "__source" && !seen.has(f)) { seen.add(f); fields.push(f); }
+      const columnar = { __row_id__: rows.map((r) => String(r.__row_id__)) };
+      for (const f of fields) columnar[f] = rows.map((r) => (r[f] === undefined ? null : r[f]));
+      model.set("_shaped", JSON.parse(JSON.stringify(columnar)));
+      model.set("_router_stats", { ...routed.stats });
+      model.save_changes();
+    };
+    routed.attach(grid, (change) => {
+      // a spread attribute (or a join) can introduce a field the grid has no column for yet
+      const fresh = [];
+      for (const r of [...(change.add || []), ...(change.update || [])]) {
+        for (const f of Object.keys(r)) if (!HIDDEN_FIELDS.has(f) && !known.has(f)) { known.add(f); fresh.push(f); }
+      }
+      if (fresh.length) grid.set("columns", inferColumns(routed.rows(), model.get("_columns")));
+      if (shapedTimer !== null) clearTimeout(shapedTimer);
+      shapedTimer = setTimeout(reportShaped, 120);
+    });
+    const onRouterMsg = (msg) => { if (msg && msg.type === "lg:router") routed.diff(msg); };
+    model.on("msg:custom", onRouterMsg);
+    routerOff = () => { if (shapedTimer !== null) clearTimeout(shapedTimer); model.off("msg:custom", onRouterMsg); routed.destroy(); };
+    setTimeout(reportShaped, 0);
+  }
 
   // Charts bind to this grid by its uid (card 1619): the chart widget is another
   // view in the same page, so it finds the live grid here and subscribes to the
@@ -425,6 +601,7 @@ async function render({ model, el }) {
   model.on("change:_grid_options", onOptions);
 
   return () => {
+    routerOff();
     if (uid && registry.grids.get(uid) && registry.grids.get(uid).grid === grid) registry.grids.delete(uid);
     ask.dispose();
     model.off("change:_grid_options", onOptions);

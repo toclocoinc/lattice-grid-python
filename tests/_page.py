@@ -31,6 +31,7 @@ window.__model = {
   on: (e, cb) => { (L[e]=L[e]||[]).push(cb); },
   off: (e, cb) => { L[e] = (L[e]||[]).filter(f=>f!==cb); },
 };
+window.__pymsg = (content) => { (L['msg:custom']||[]).slice().forEach(f => f(content, [])); };
 window.__pyset = (k, v) => { state[k] = v; (L['change:'+k]||[]).forEach(f=>f()); };
 </script>
 <script type=module>
