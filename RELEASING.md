@@ -37,9 +37,12 @@ repository a `repository_dispatch` of type `grid-released` carrying
 `{ "version": "1.69.0" }`. That starts `.github/workflows/publish-pypi.yml`:
 
 1. **bump** — downloads that exact tarball, vendors `lattice-grid.min.js` and
-   `lattice-grid.min.css` into the Jupyter wheel, rebuilds the Dash component's
-   browser bundle (esbuild compiles the grid *into* it), and rewrites every
-   version string in the tree;
+   `lattice-grid.min.css` into the Jupyter wheel, vendors the modules
+   `LatticeChart` and `LatticeRouter` load offline (`modules/charts.min.js`, one
+   `chart-<type>.min.js` per extension chart type, `modules/data-router.min.js`)
+   and regenerates the option and chart-spec name tables from the tarball's
+   `lattice-grid.d.ts`, rebuilds the Dash component's browser bundle (esbuild
+   compiles the grid *into* it), and rewrites every version string in the tree;
 2. **test** — installs the three packages the way a user would and runs the
    whole suite, including the real-browser smoke tests, against the new bundle.
    Chromium is installed so those tests *run* rather than skip. **A red test is
@@ -71,6 +74,18 @@ live.
 Actions -> **Publish Python packages to PyPI** -> Run workflow, and give it a
 grid version (`1.69.0`). Same job, same tests, same publish. Leave the version
 empty to publish the tree exactly as it stands — a packaging-only re-release.
+
+### A revision: new wrapper code, same grid
+
+When the wrappers change and the grid has not, ship `<grid>.<revision>` with the
+revision one above what PyPI has (1.85.0.1 was the first: the notebook features
+in `CHANGELOG.md`). Commit the code to `main` with the bump already applied
+(`python tools/bump_grid.py --grid-version 1.85.0 --revision 1 --build-dash`)
+and a `CHANGELOG.md` entry. Then **Run workflow** with the same grid version and
+revision (`1.85.0`, `1`): the bump re-vendors the same tarball, finds nothing to
+commit, runs the whole suite in a real browser and publishes. An empty grid
+version also publishes, but skips the tests. The revision typed in must be the
+one committed: a lower one would rewrite `main` back to it.
 
 ---
 
