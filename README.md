@@ -109,6 +109,90 @@ w.delete_rows(keys)                # delete by the keys append_rows returned
 Row keys are stable, so keys returned by `append_rows` stay valid for
 `delete_rows` and for later edits.
 
+## Selection, the filtered view and state: grid -> Python
+
+The grid is not a one-way display. What the user does in it comes back as
+DataFrames and a plain dict (only row **keys** cross the comm; Python slices the
+frame it already holds, so dtypes, the original index and missing values are the
+frame's own):
+
+```python
+w.selected    # the selected rows: a DataFrame with the original index and dtypes
+              # (an EMPTY frame, never None, when nothing is selected)
+w.view        # the rows passing the grid's filters (quick search included),
+              # in the grid's current sort order
+w.state       # filter / sort / column / group / pivot state, a plain dict
+w.state = {...}   # restore a state (e.g. one you saved earlier)
+```
+
+```python
+def on_select(change):
+    print(len(change["new"]), "rows selected")        # change["new"] is a DataFrame
+
+w.observe(on_select, names="selected")
+w.observe(lambda c: print(len(c["new"]), "rows in view"), names="view")
+```
+
+`selected` and `view` notify **once per user change**: the front end debounces
+(120 ms), so typing in the quick search does not send a message per keystroke,
+and an unchanged result never notifies. Before the grid has reported, `view` is
+the whole frame. Row selection is on by default (`selection="multiple"`; override
+with `options={"selection": "single"}`).
+
+**Tutorial step: select rows, get a DataFrame.**
+
+1. `w = LatticeGridWidget(df); w`: click a row, Ctrl-click another.
+2. In the next cell: `w.selected` shows exactly those rows, with their original
+   index labels, so `df.loc[w.selected.index]` addresses the same rows.
+3. Type in the grid's search box, then `w.view` is the matching rows in the order
+   you see them. `w.view.to_csv("shown.csv")` exports what is on screen.
+
+## Grid options from Python
+
+```python
+w = LatticeGridWidget(
+    df,
+    options={"row_height": 32, "stripe": True},                 # grid options
+    columns=[{"field": "score", "title": "Score", "width": 120}],  # per column
+    histograms=True,           # header histograms
+    profile=True,              # the Statistics tool panel
+    pivot="region",            # pivot on a field (or pivot={...} for the option)
+)
+w.options = {"row_height": 44}   # updates the LIVE grid; the data is not re-sent
+```
+
+* Options and column entries are **plain dicts**. `snake_case` keys are accepted
+  and mapped to the grid's `camelCase` (`row_height` -> `rowHeight`), but **only
+  when the camelCase form is a real grid property name**: ids you chose (a column
+  called `sales_total`, the keys of `context`) are never rewritten.
+* **Options are data.** Functions (`compute`, `row_class`, hooks, renderers)
+  cannot reach the browser: passing one raises `TypeError` rather than being
+  dropped. Use the declarative forms (format/type strings, formulas, presets).
+* `rows`, `rowKey` and the column set are built from the DataFrame; the keys are
+  ignored with a warning. Per-column options go in `columns=[...]`, matched on
+  `field`; they survive `set_data`.
+* **Unknown or mistyped options are not silent.** The grid validates in the
+  browser and its own warning ids come back as Python warnings (class
+  `LatticeGridWarning`), e.g. `[lattice] config.unknown:row_hieght: 'row_hieght'
+  is not a configuration key this grid recognises` or `config.value:rowHeight`
+  for a wrong type. Per-column typos give `column.unknown:<key>`.
+* `widget.options = {...}` replaces the options on the live grid by sending the
+  options alone (keys you drop are reset). Per-column options and the flags
+  apply at construction.
+
+**Recipe: profile a DataFrame.**
+
+```python
+w = LatticeGridWidget(df, profile=True, histograms=True)
+w
+```
+
+Header histograms show each column's distribution and clicking a bar filters on
+it (then `w.view` is the filtered frame). Open the **Statistics** tab on the right
+edge, click a cell, and the panel shows the present/missing/distinct counts, the
+twelve numeric figures and a histogram (or, for text, the top values), all
+following the filters.
+
 ## Large DataFrames
 
 The frame is serialized **column-major** (`{field: [values...]}`), not as a
@@ -140,12 +224,20 @@ w = LatticeGridWidget(df, licence="LG-...")
 The key is threaded straight into `createGrid({ licence })`; `grid.licence.state()`
 resolves to `localhost`, `licensed`, or `trial`.
 
+## Hosts
+
+JupyterLab 4 and Notebook 7 are proven by automated tests; VS Code and Colab need
+a manual check. See [`docs/hosts.md`](docs/hosts.md). The release flow runs
+`python tools/check_grid_pin.py --expect <grid version>` to check that the
+widget, the vendored bundle and the Dash bundle all carry the same grid.
+
 ## Development / tests
 
 ```bash
 pip install -e ".[dev]"
 pytest tests/test_serialize.py tests/test_roundtrip.py   # Python round-trip (no browser)
 pytest tests/test_smoke_browser.py                        # real-browser smoke test
+pytest                                                    # everything, incl. the Lab/Notebook host proofs and the Dash package
 ```
 
 The smoke test drives a **real Chromium** via Playwright: it renders the widget's

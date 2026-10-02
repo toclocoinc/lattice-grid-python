@@ -23,6 +23,7 @@ kind -- see the ``lattice-grid-pandas`` README for the full contract.
 from __future__ import annotations
 
 import pathlib
+import warnings
 from typing import Any, Iterable
 
 import anywidget
@@ -31,7 +32,9 @@ import traitlets
 
 from lattice_grid_pandas import GRID_VERSION  # noqa: F401  (re-exported)
 
+from . import _options as O
 from . import _serialize as S
+from ._options import LatticeGridWarning
 
 _HERE = pathlib.Path(__file__).parent
 _STATIC = _HERE / "static"
@@ -60,6 +63,18 @@ class LatticeGridWidget(anywidget.AnyWidget):
     # grid -> Python
     _edit = traitlets.Dict(allow_none=True).tag(sync=True)
     _licence_state = traitlets.Unicode("").tag(sync=True)
+    _selected_keys = traitlets.List().tag(sync=True)                  # keys only
+    _view_keys = traitlets.List(allow_none=True, default_value=None).tag(sync=True)
+    _grid_warnings = traitlets.List().tag(sync=True)                  # [{id, message}]
+
+    # options / state, both directions
+    _grid_options = traitlets.Dict().tag(sync=True)                   # camelCase, effective
+    state = traitlets.Dict().tag(sync=True)
+    """The grid's filter / sort / column / group / pivot state as a plain dict.
+    Read it after the user changes the view; assign a dict to restore one."""
+    options = traitlets.Dict()
+    """Grid options as plain dicts (snake_case accepted). Assigning updates the
+    live grid without re-sending the data."""
 
     def __init__(
         self,
@@ -68,6 +83,12 @@ class LatticeGridWidget(anywidget.AnyWidget):
         height: int = 360,
         offline: bool = False,
         grid_version: str = GRID_VERSION,
+        options: dict | None = None,
+        columns: list[dict] | None = None,
+        profile: bool = False,
+        histograms: bool = False,
+        pivot: Any = None,
+        state: dict | None = None,
         **kwargs: Any,
     ):
         if not isinstance(df, pd.DataFrame):
@@ -84,6 +105,14 @@ class LatticeGridWidget(anywidget.AnyWidget):
         if offline:
             grid_js, grid_css = _load_vendored()
 
+        self._column_overrides = list(columns) if columns else []
+        self._flags = self._flag_options(profile, histograms, pivot)
+        self._flag_state = self._flag_state_for(pivot)
+        if self._column_overrides:  # validate early, name what is wrong
+            O.merge_columns(S.build_columns(self._df), self._column_overrides)
+        eff = O.grid_options(options, self._flags)
+        seed_state = {**self._flag_state, **(state or {})}
+
         super().__init__(
             licence=licence,
             height=height,
@@ -91,11 +120,45 @@ class LatticeGridWidget(anywidget.AnyWidget):
             _grid_version=grid_version,
             _grid_js=grid_js,
             _grid_css=grid_css,
+            _grid_options=eff,
+            options=dict(options or {}),
+            state=seed_state,
             **kwargs,
         )
         self._row_key = S.ROW_KEY
         self._push_frame()
         self.observe(self._on_edit, names="_edit")
+        self.observe(self._on_options, names="options")
+        self.observe(self._on_grid_warnings, names="_grid_warnings")
+        self.observe(self._on_selected_keys, names="_selected_keys")
+        self.observe(self._on_view_keys, names="_view_keys")
+
+    # --- convenience flags -----------------------------------------------------
+    @staticmethod
+    def _flag_options(profile: bool, histograms: bool, pivot: Any) -> dict:
+        flags: dict = {}
+        if profile:
+            # the statistics tool panel: per-column figures + a histogram of its shape
+            flags["toolPanel"] = {"panels": ["columns", "statistics"]}
+        if histograms:
+            flags["facets"] = {"enabled": True}  # header histograms
+        flags.update(O.pivot_options(pivot))
+        return flags
+
+    @staticmethod
+    def _flag_state_for(pivot: Any) -> dict:
+        fields = [pivot] if isinstance(pivot, str) else (
+            list(pivot) if isinstance(pivot, (list, tuple)) else [])
+        return {"version": 1, "pivot": {"enabled": True, "columns": [str(f) for f in fields]}} if fields else {}
+
+    def _on_options(self, change: dict) -> None:
+        # push only the options trait; the data traits are not touched
+        self._grid_options = O.grid_options(change["new"], self._flags)
+
+    def _on_grid_warnings(self, change: dict) -> None:
+        for w in change["new"] or []:
+            warnings.warn(f"[lattice] {w.get('id')}: {w.get('message')}",
+                          LatticeGridWarning, stacklevel=2)
 
     # --- keys ------------------------------------------------------------------
     def _fresh_keys(self, n: int) -> list[str]:
@@ -111,13 +174,55 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
     # --- DataFrame -> grid -----------------------------------------------------
     def _push_frame(self) -> None:
-        self._columns = S.build_columns(self._df)
+        self._columns = O.merge_columns(S.build_columns(self._df), self._column_overrides)
         self._columnar = S.build_columnar(self._df, self._keys)
 
     @property
     def df(self) -> pd.DataFrame:
         """The live DataFrame, reflecting every edit made in the grid."""
         return self._df
+
+    # --- selection / filtered view (grid -> Python, keys only) -----------------
+    def _frame_for(self, keys: Iterable[str] | None) -> pd.DataFrame:
+        """Rows of the live frame for these keys, in the given order; keeps the
+        original index and dtypes. Keys no longer present are dropped."""
+        if keys is None:
+            return self._df
+        pos = {k: i for i, k in enumerate(self._keys)}
+        idx = [pos[str(k)] for k in keys if str(k) in pos]
+        return self._df.iloc[idx]
+
+    @property
+    def selected(self) -> pd.DataFrame:
+        """The selected rows as a DataFrame (original index and dtypes), in frame
+        order. An empty frame -- never None -- when nothing is selected."""
+        chosen = set(map(str, self._selected_keys))
+        keys = [k for k in self._keys if k in chosen]
+        return self._frame_for(keys)
+
+    @property
+    def view(self) -> pd.DataFrame:
+        """The rows passing the grid's filters (quick search included), in the
+        grid's sort order. Before the grid reports, every row."""
+        return self._frame_for(self._view_keys)
+
+    def _has_observers(self, name: str) -> bool:
+        n = self._trait_notifiers.get(name, {}).get("change")
+        a = self._trait_notifiers.get(traitlets.All, {}).get("change")
+        return bool(n or a)
+
+    def _notify_frame(self, name: str, new: pd.DataFrame) -> None:
+        if self._has_observers(name):
+            self.notify_change(traitlets.Bunch(
+                name=name, old=None, new=new, owner=self, type="change"))
+
+    def _on_selected_keys(self, change: dict) -> None:
+        if self._has_observers("selected"):
+            self._notify_frame("selected", self.selected)
+
+    def _on_view_keys(self, change: dict) -> None:
+        if self._has_observers("view"):
+            self._notify_frame("view", self.view)
 
     # --- grid edit -> DataFrame ------------------------------------------------
     def _on_edit(self, change: dict) -> None:
