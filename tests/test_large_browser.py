@@ -359,3 +359,27 @@ def test_real_browser_set_data_across_the_threshold_switches_the_source():
             page.wait_for_function(f"{GRID}.rows.count() === 40", timeout=10000)
         finally:
             s.close()
+
+
+def test_real_browser_statistics_panel_shows_pythons_profile():
+    df = frame()
+    panel = "(() => { const e = document.querySelector('.lat-panel__body'); return e ? e.innerText : ''; })()"
+    with sync_playwright() as p:
+        s = Session(p)
+        try:
+            texts = []
+            for windowed in (False, True):
+                w = LatticeGridWidget(df, offline=True, windowed=windowed, profile=True)
+                page = s.open(w)
+                page.evaluate(f"{GRID}.filters.set({{col:'score', op:'gte', value:20}})")
+                page.wait_for_timeout(300)
+                page.evaluate(f"{GRID}.toolPanel.open('statistics')")
+                n = int((df["score"] >= 20).sum())
+                page.wait_for_function(panel + f".includes('Over the {n} filtered rows')", timeout=8000)
+                page.wait_for_timeout(300)
+                texts.append(page.evaluate(panel))
+                if windowed:
+                    assert "profile" in page.lg_log
+            assert texts[1] == texts[0]
+        finally:
+            s.close()

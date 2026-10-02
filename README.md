@@ -236,9 +236,12 @@ v.positions()       # row positions in the source frame
 `w.observe(fn, names="view")` fires when the grid's filter, quick search or
 sort changes, with a fresh `LazyView`.
 
-**Measured on the development machine (16 cores) for 10,000,000 rows x 20
-columns** (JupyterLab 4, headless Chrome): see the table in
-`docs/large-data.md`.
+**Measured for 10,000,000 rows x 20 columns** (JupyterLab 4, headless Chrome,
+16-core development machine): first paint about 350 ms; a scroll jump to a
+far, never-fetched window about 70 to 80 ms (median); sorting all 10M rows on a
+number about 2 s, after which scrolling the sorted view is as fast as unsorted.
+Before this, the widget crossed 5 s to first paint between 50,000 and 100,000
+rows. Details and every figure: [`docs/large-data.md`](docs/large-data.md).
 
 **What to know:**
 
