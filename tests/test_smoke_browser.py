@@ -181,7 +181,11 @@ def test_real_browser_datetime_edit_round_trip():
 
 
 def test_large_dataframe_renders_virtualized():
-    """A 100k-row frame renders in a real browser without freezing (virtualized)."""
+    """A 100k-row frame renders in a real browser without freezing (virtualized).
+
+    The CLIENT path at 100k rows: since card 1618 a frame this size is windowed
+    by default (tests/test_large_*.py), so this pins ``windowed=False`` to keep
+    proving that the whole-frame path itself still copes at 100k."""
     import numpy as np
     n = 100_000
     df = pd.DataFrame({
@@ -190,7 +194,7 @@ def test_large_dataframe_renders_virtualized():
         "flag": np.random.rand(n) > 0.5,
         "label": [f"r{i}" for i in range(n)],
     })
-    w = LatticeGridWidget(df, offline=True)
+    w = LatticeGridWidget(df, offline=True, windowed=False)
 
     with sync_playwright() as p:
         browser = _launch(p)
