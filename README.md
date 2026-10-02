@@ -193,6 +193,38 @@ edge, click a cell, and the panel shows the present/missing/distinct counts, the
 twelve numeric figures and a histogram (or, for text, the top values), all
 following the filters.
 
+## Charts
+
+```python
+from ipywidgets import HBox
+from lattice_grid_jupyter import LatticeGridWidget, LatticeChart
+
+grid = LatticeGridWidget(df)
+roc = LatticeChart(grid, type="roc", label="churned", score="score")
+HBox([grid, roc])        # filter the grid: the chart redraws in the browser
+```
+
+`LatticeChart(grid_or_df, type="bar", **spec)` is a chart **viewer of the grid's
+dataset**, bound through the grid's own binding: it follows the grid's filters, quick
+search and selection live in the browser, with no round trip to Python. A DataFrame
+can be charted directly (`LatticeChart(df, type="scatter", x="a", y="b")`).
+
+| | |
+|---|---|
+| `type` | any grid chart type, plus the opt-in `roc`, `fan`, `decomposition`, `splom`, `hexbin`, `ridgeline` (proven here: `bar`, `line`, `pie`, `scatter` and those six) |
+| `**spec` | the chart spec as plain data: `x`, `y`, `series`, `title`, `scheme`, `measures`, ...; `snake_case` is mapped; an unknown key warns by name (`config.unknown:<key>`) and is dropped; functions raise `TypeError` |
+| `height`, `offline`, `licence` | size; vendored (offline) or CDN modules; inherited from the grid when omitted |
+| `chart.update(type=..., **spec)` | change the type and replace the spec live (one redraw) |
+| `chart.set_data(df)` | new data for a DataFrame-backed chart |
+| `chart.draws` | how many times the browser has drawn it |
+
+Chart code loads per type (the base chart module plus the one type module), never as
+one bundle with every chart. On a **windowed (large) grid** the chart is drawn from
+the grouped aggregates Python already computes (`bar`, `line`, `pie`, ... with `x` and
+`y`) or refused with a named warning (`chart.windowed.refused:<type>`); it never reads
+the rows. One example per type, the large-grid rules and the layout notes are in
+[`docs/charts.md`](docs/charts.md).
+
 ## Large data
 
 Below **100,000 rows** the widget sends the whole frame to the browser

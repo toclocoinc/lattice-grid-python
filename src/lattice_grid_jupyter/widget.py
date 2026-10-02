@@ -30,6 +30,7 @@ cross the comm. See ``_engine.py`` and the README's "Large data" section.
 from __future__ import annotations
 
 import pathlib
+import uuid
 import warnings
 from typing import Any, Iterable
 
@@ -64,6 +65,9 @@ class LatticeGridWidget(anywidget.AnyWidget):
     _row_key = traitlets.Unicode(S.ROW_KEY).tag(sync=True)
     licence = traitlets.Unicode("").tag(sync=True)
     height = traitlets.Int(360).tag(sync=True)
+
+    # a stable id charts bind to (card 1619): the browser registers the live grid under it
+    _uid = traitlets.Unicode("").tag(sync=True)
 
     # bundle delivery
     _grid_source = traitlets.Unicode("cdn").tag(sync=True)   # "cdn" | "vendor"
@@ -142,6 +146,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
         seed_state = {**self._flag_state, **(state or {})}
 
         super().__init__(
+            _uid=uuid.uuid4().hex,
             licence=licence,
             height=height,
             _grid_source=source,

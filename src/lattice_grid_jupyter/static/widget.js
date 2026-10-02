@@ -135,7 +135,7 @@ async function loadGrid(model) {
       document.head.appendChild(style);
     }
     // Inject the UMD bundle once -> window.LatticeGrid.
-    if (!window.LatticeGrid) {
+    if (!(window.LatticeGrid && typeof window.LatticeGrid.createGrid === "function")) {
       const js = model.get("_grid_js") || "";
       if (!js) throw new Error("vendor mode but _grid_js is empty");
       const script = document.createElement("script");
@@ -218,6 +218,16 @@ async function render({ model, el }) {
   });
   host.__latticeGrid = grid; // handle for tests and notebook-side debugging
   host.__latticeAsk = ask;
+
+  // Charts bind to this grid by its uid (card 1619): the chart widget is another
+  // view in the same page, so it finds the live grid here and subscribes to the
+  // grid's own events; no round trip to Python for a filter or a selection.
+  const uid = model.get("_uid") || "";
+  const registry = (window.__latticeGrids = window.__latticeGrids || { grids: new Map(), listeners: new Map() });
+  if (uid) {
+    registry.grids.set(uid, { grid, ask, windowed, lib: mod });
+    for (const fn of registry.listeners.get(uid) || []) fn(registry.grids.get(uid));
+  }
 
   // Profile statistics over a windowed source: the grid's own profile reads the
   // rows it holds (a window), so the Statistics panel's profile is answered by
@@ -415,6 +425,7 @@ async function render({ model, el }) {
   model.on("change:_grid_options", onOptions);
 
   return () => {
+    if (uid && registry.grids.get(uid) && registry.grids.get(uid).grid === grid) registry.grids.delete(uid);
     ask.dispose();
     model.off("change:_grid_options", onOptions);
     model.off("change:state", onState);
