@@ -225,16 +225,25 @@ class _Col:
         return out
 
     def _iso_text(self) -> np.ndarray:
-        """ISO 8601 text per timestamp, as the forward serialisation writes it."""
+        """ISO 8601 text per timestamp, as the forward serialisation writes it.
+
+        That serialisation is ``lattice_grid_pandas._serialize.column_values``,
+        which is UTC end to end (BACKLOG-0001425): a naive column is written with
+        a trailing ``Z``, a tz-aware column is converted to UTC first. The text
+        here must be the same bytes, or a quick search over a windowed frame
+        would match differently from the same frame held in the browser.
+        """
         s = self.series
         if getattr(s.dt, "tz", None) is None:
             ns = s.to_numpy(dtype="datetime64[ns]")
             whole = ns.astype("int64")
             if not (whole[~self.missing] % 1_000_000_000).any():
-                out = np.datetime_as_string(ns, unit="s").astype(object)
+                out = (np.datetime_as_string(ns, unit="s").astype(object) + "Z").astype(object)
                 out[self.missing] = None
                 return out
-        return np.array([None if pd.isna(x) else x.isoformat() for x in s], dtype=object)
+            return np.array([None if pd.isna(x) else x.isoformat() + "Z" for x in s], dtype=object)
+        utc = s.dt.tz_convert("UTC")
+        return np.array([None if pd.isna(x) else x.isoformat() for x in utc], dtype=object)
 
     # --- text ----------------------------------------------------------------
     def raw_text(self, lower: bool) -> np.ndarray:

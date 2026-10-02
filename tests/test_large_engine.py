@@ -372,3 +372,23 @@ def test_distinct_value_paths_agree_with_row_by_row(monkeypatch):
         monkeypatch.setattr(E, "FACTORIZE_ABOVE", 10**9)
         b = slow.facet({"colId": col, "filters": {"col": "n", "op": "lt", "value": 50}})
         assert a == b, col
+
+
+@pytest.mark.parametrize(
+    "series",
+    [
+        pd.Series(pd.to_datetime(["2021-03-04 05:06:07", None, "2021-03-05 00:00:00"])),
+        pd.Series(pd.to_datetime(["2021-03-04 05:06:07.25", None])),
+        pd.Series(pd.to_datetime(["2021-07-04 05:06:07", None])).dt.tz_localize("Europe/London"),
+    ],
+    ids=["naive-whole-seconds", "naive-fractional", "tz-aware"],
+)
+def test_windowed_timestamp_text_is_the_forward_serialisation(series):
+    """Quick search / text predicates over a windowed timestamp column see the
+    same text the client path holds: ``column_values`` is UTC end to end
+    (BACKLOG-0001425), a trailing ``Z`` on naive columns and tz-aware columns
+    converted to UTC, so the engine's text must carry the same bytes."""
+    from lattice_grid_jupyter._engine import _Col
+    from lattice_grid_pandas._serialize import column_values
+
+    assert list(_Col("when", series).raw_text(False)) == column_values(series)
