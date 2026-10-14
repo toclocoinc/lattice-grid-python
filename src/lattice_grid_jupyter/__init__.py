@@ -6,4 +6,4 @@ from ._router import LatticeRouter
 from .widget import LatticeGridWidget, GRID_VERSION
 
 __all__ = ["LatticeGridWidget", "LatticeChart", "LatticeRouter", "LatticeGridWarning", "GRID_VERSION", "__version__"]
-__version__ = "1.101.2.0"
+__version__ = "1.101.3.0"
