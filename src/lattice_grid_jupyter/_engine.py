@@ -306,6 +306,14 @@ class _Col:
 # ----------------------------------------------------------------------------
 # filter predicates (compute/filter.js)
 # ----------------------------------------------------------------------------
+def _filled(mask: pd.Series) -> np.ndarray:
+    """``mask.fillna(False).to_numpy(dtype=bool)`` without the object-dtype
+    downcast ``FutureWarning``: an object-dtype boolean mask (``str`` predicates
+    leave ``None`` where the text was missing) is cast to the nullable boolean
+    dtype first, whose ``fillna`` never downcasts an object array."""
+    return mask.astype("boolean").fillna(False).to_numpy(dtype=bool)
+
+
 def _cmp_mask(values: np.ndarray, op: str, target: float) -> np.ndarray:
     with np.errstate(invalid="ignore"):
         if op == "lt":
@@ -370,7 +378,7 @@ def condition_mask(col: _Col, cond: dict, direct: bool = False) -> np.ndarray:
         text = col.text_values(lower=True)
         needle = col._text_of(value, lower=True)
         ops = {"lt": text < needle, "lte": text <= needle, "gt": text > needle, "gte": text >= needle}
-        return ops[op].fillna(False).to_numpy(dtype=bool) & ~miss
+        return _filled(ops[op]) & ~miss
 
     if op in ("between", "notBetween"):
         pair = value if isinstance(value, (list, tuple)) else [value, value]
@@ -392,7 +400,7 @@ def condition_mask(col: _Col, cond: dict, direct: bool = False) -> np.ndarray:
             lo_t, hi_t = col._text_of(lo_v, True), col._text_of(hi_v, True)
             a = (text >= lo_t) if lo_inc else (text > lo_t)
             b = (text <= hi_t) if hi_inc else (text < hi_t)
-            inside = (a & b).fillna(False).to_numpy(dtype=bool)
+            inside = _filled(a & b)
         inside = inside & ~miss
         return inside if op == "between" else ~inside
 
@@ -441,7 +449,7 @@ def condition_mask(col: _Col, cond: dict, direct: bool = False) -> np.ndarray:
                 hit = text.str.startswith(nd)
             else:
                 hit = text.str.endswith(nd)
-        m = hit.fillna(False).to_numpy(dtype=bool) & ~miss
+        m = _filled(hit) & ~miss
         return ~m if op == "notContains" else m
 
     raise ValueError(f"[lattice] filter operator {op!r} is not answered by the Python engine")
@@ -552,11 +560,11 @@ class PandasEngine:
             if c.kind in ("text", "category") and n > FACTORIZE_ABOVE:
                 codes, uniques = c.factorized()
                 low = pd.Series(uniques, dtype=object).str.lower()
-                per_value = low.str.contains(needle, regex=False).fillna(False).to_numpy(dtype=bool)
+                per_value = _filled(low.str.contains(needle, regex=False))
                 hit |= np.where(codes < 0, False, per_value[np.clip(codes, 0, None)]) if len(uniques) else False
                 continue
             text = c.text_values(lower=True)
-            hit |= text.str.contains(needle, regex=False).fillna(False).to_numpy(dtype=bool)
+            hit |= _filled(text.str.contains(needle, regex=False))
         return hit
 
     def mask(self, filters: Any, quick: str = "") -> np.ndarray:

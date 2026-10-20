@@ -4,6 +4,14 @@ Wrapper versions are `<grid version>.<revision>` (see `RELEASING.md`). Automatic
 grid bumps (`Lattice Grid X -> Python wrappers X.0`) change only the vendored grid
 and are not listed here; a revision above `.0` is.
 
+## Unreleased
+
+### Fixed
+
+- Large-mode filters (`contains`, `startsWith`, `endsWith`, `notContains` and the
+  text comparison operators) no longer print a pandas `FutureWarning` about
+  silently downcasting an object-dtype mask; the same rows are returned as before.
+
 ## 1.85.0.1
 
 Same grid as 1.85.0.0 (Lattice Grid 1.85.0). `lattice-grid-pandas`,
