@@ -124,5 +124,44 @@ def test_delete_rows_incremental_keeps_keys_aligned(df):
     assert w.df.iloc[1]["name"] == "Linus T."
 
 
+# --- BACKLOG-0004772: list cells, set_data with a new schema ------------------
+def test_a_line_cell_spec_receives_real_arrays_not_text():
+    frame = pd.DataFrame({
+        "name": ["Ada", "Grace"],
+        "trend": [[1.0, 2.0, 1.5], np.array([3, 4, 5])],
+    })
+    w = LatticeGridWidget(frame, columns=[{"field": "trend", "type": "line"}])
+    spec = next(c for c in w._columns if c["field"] == "trend")
+    assert spec["type"] == "line"
+    assert w._columnar["trend"] == [[1.0, 2.0, 1.5], [3, 4, 5]]
+    import json
+    json.dumps(w._columnar)  # the whole payload is real JSON, never str(list)
+
+
+def test_set_data_with_a_new_schema_adds_and_removes_columns(df):
+    w = LatticeGridWidget(df)
+    w.set_data(pd.DataFrame({"name": ["Zoe"], "region": ["west"]}))
+    fields = {c["field"] for c in w._columns}
+    assert fields == {"name", "region"}       # score/ratio/active gone, region new
+    assert w._columnar["region"] == ["west"]
+    assert "score" not in w._columnar
+
+
+def test_set_data_dropping_the_sorted_column_prunes_state_and_avoids_keyerror(df):
+    seed = {
+        "version": 2,
+        "sort": [{"col": "score", "dir": "desc"}],
+        "filters": {"col": "score", "op": "gt", "value": 0},
+        "columns": [{"id": "score", "width": 120}, {"id": "name", "width": 80}],
+    }
+    w = LatticeGridWidget(df, state=seed)
+    w.set_data(pd.DataFrame({"name": ["Zoe"], "region": ["west"]}))
+    assert w.state["sort"] == []               # named the dropped 'score' column
+    assert w.state["filters"] is None          # same
+    assert w.state["columns"] == [{"id": "name", "width": 80}]  # 'score' width entry gone
+    # no KeyError computing the view over the new schema despite the stale sort/filter
+    assert list(w.view["name"]) == ["Zoe"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

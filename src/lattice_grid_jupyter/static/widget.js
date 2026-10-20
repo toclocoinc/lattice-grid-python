@@ -477,13 +477,16 @@ async function render({ model, el }) {
   const onData = () => {
     const mode = model.get("_mode") || "client";
     profiles.clear();
+    // set_data may bring a new schema (BACKLOG-0004772): rows.load() keeps the
+    // column layout, so a column add/remove/retype needs an explicit columns
+    // update first, or a new column never appears (stale ones linger).
+    grid.set("columns", model.get("_columns"));
     if (mode === "windowed") {
       // A new windowed source: every cached window, count and histogram goes.
       grid.set("source", pushdown());
     } else if (shownMode === "windowed") {
       grid.set("source", { mode: "memory", rows: reconstructRows(model) });
     } else if (typeof grid.rows.load === "function") {
-      // load() keeps the column layout; set_data assumes the same schema.
       grid.rows.load(reconstructRows(model));
     }
     shownMode = mode;

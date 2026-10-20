@@ -11,6 +11,22 @@ and are not listed here; a revision above `.0` is.
 - Large-mode filters (`contains`, `startsWith`, `endsWith`, `notContains` and the
   text comparison operators) no longer print a pandas `FutureWarning` about
   silently downcasting an object-dtype mask; the same rows are returned as before.
+- A column of Python lists, tuples or numpy arrays serializes as real JSON arrays
+  instead of their text representation, so a `line` (sparkline) cell spec now
+  receives actual numbers instead of rendering blank.
+- `widget.view` is now computed in the kernel from the frame and the grid's own
+  `state` whenever that is possible, instead of depending on a comm message the
+  browser sends back; it is now correct in a later cell under `Run All` (or any
+  headless run with no front end attached), rather than silently returning an
+  empty or unfiltered view. A router's shaped view, which the browser must
+  compute, now blocks for that report with a timeout and raises instead of
+  returning the empty placeholder frame.
+- `set_data` with a different schema now adds, removes and retypes the grid's
+  columns instead of only repainting the old ones with new values (new columns
+  were previously never shown). It also prunes any sort, filter or column-width
+  state that names a column no longer present, instead of leaving a stale
+  reference that crashed the next query with a `KeyError` and left the grid
+  showing "Failed to load" in every cell.
 
 ## 1.85.0.1
 

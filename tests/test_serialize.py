@@ -44,6 +44,23 @@ def test_datetime_tz_isoformat():
     assert v.startswith("2021-06-01T12:00:00") and ("+00:00" in v or "Z" in v)
 
 
+# --- BACKLOG-0004772: list / tuple / ndarray cells -> real JSON arrays --------
+def test_list_tuple_and_ndarray_cells_serialize_as_json_arrays_not_text():
+    s = pd.Series([[1.0, 2.0, 1.5], (3, 4, 5), np.array([6, 7.5]), None], dtype="object")
+    vals = S.column_values(s)
+    assert vals[0] == [1.0, 2.0, 1.5] and isinstance(vals[0], list)
+    assert vals[1] == [3, 4, 5] and isinstance(vals[1], list)
+    assert vals[2] == [6.0, 7.5] and isinstance(vals[2], list)
+    assert vals[3] is None
+    import json
+    assert json.loads(json.dumps(vals)) == vals  # real arrays, not str(list) text
+
+
+def test_ndarray_cell_with_nan_and_numpy_scalars_coerces_per_element():
+    s = pd.Series([np.array([1, np.nan, 3])], dtype="object")
+    assert S._jsonable_scalar(s.iloc[0]) == [1.0, None, 3.0]
+
+
 # --- BACKLOG-0001425: UTC end-to-end datetime contract ------------------------
 #
 # Three column kinds the contract names explicitly: a naive column (declared

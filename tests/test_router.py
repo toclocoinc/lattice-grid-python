@@ -85,6 +85,17 @@ def test_a_router_backed_grid_refuses_the_dataframe_mutators():
             call()
 
 
+# --- BACKLOG-0004772: no silent empty view before the router has shaped anything
+def test_view_blocks_then_raises_a_named_error_if_the_router_never_reports():
+    from lattice_grid_jupyter import LatticeViewTimeout
+    r = LatticeRouter(sources={"customer": {"data": CUST, "key": "cid"}})
+    w = LatticeGridWidget(r)
+    w._view_timeout = 0.2  # no browser in this test: fail fast rather than wait the real default
+    with pytest.raises(LatticeViewTimeout):
+        w.view
+    assert w._df.shape == (0, 0)  # confirms what would otherwise be returned silently
+
+
 def test_update_sends_a_keyed_diff_and_keeps_late_views_current():
     c, t, l = customers_txns_labels()
     r = LatticeRouter(sources={"customer": {"data": c, "key": "customer_id"},

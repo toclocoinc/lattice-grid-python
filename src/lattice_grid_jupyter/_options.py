@@ -107,3 +107,35 @@ def pivot_options(pivot: Any) -> dict:
     if pivot is True:
         return {"pivot": {"enabled": True}}
     return {}
+
+
+def _is_filter_group(node: Any) -> bool:
+    return isinstance(node, dict) and isinstance(node.get("conditions"), list)
+
+
+def _prune_filter_node(node: Any, fields: set) -> Any:
+    if not isinstance(node, dict):
+        return node
+    if _is_filter_group(node):
+        kids = [k for k in (_prune_filter_node(c, fields) for c in node["conditions"]) if k is not None]
+        return {**node, "conditions": kids} if kids else None
+    return node if node.get("col") in fields else None
+
+
+def prune_state_for_columns(state: dict | None, fields: Any) -> dict:
+    """Drop sort / filter / per-column (width, pinned, ...) state that names a
+    column gone from the frame (``set_data`` with a new schema, BACKLOG-0004772):
+    a stale reference otherwise crashes the Python engine (``KeyError``) or
+    leaves the grid trying to show a column it can no longer load.
+    """
+    fields = set(fields)
+    st = dict(state or {})
+    if isinstance(st.get("sort"), list):
+        st["sort"] = [s for s in st["sort"] if not isinstance(s, dict) or s.get("col") in fields]
+    if "filters" in st and st["filters"] is not None:
+        st["filters"] = _prune_filter_node(st["filters"], fields)
+    if isinstance(st.get("columns"), list):
+        st["columns"] = [c for c in st["columns"] if not isinstance(c, dict) or c.get("id") in fields]
+    if isinstance(st.get("columnOrder"), list):
+        st["columnOrder"] = [c for c in st["columnOrder"] if c in fields]
+    return st
