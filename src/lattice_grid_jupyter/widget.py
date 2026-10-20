@@ -30,6 +30,7 @@ cross the comm. See ``_engine.py`` and the README's "Large data" section.
 from __future__ import annotations
 
 import pathlib
+import time
 import uuid
 import warnings
 from typing import Any, Iterable
@@ -46,7 +47,12 @@ from . import _serialize as S
 from ._engine import AGGREGATES, OPERATORS, PandasEngine
 from ._options import LatticeGridWarning
 from ._router import LatticeRouter, shaped_frame
-from ._view import LazyView
+from ._view import LatticeViewTimeout, LazyView
+
+#: How long ``view`` waits for the browser before raising, for a case the kernel
+#: cannot compute on its own (BACKLOG-0004772). Tests set it short; a notebook
+#: cell blocked this long almost certainly has no front end attached at all.
+VIEW_TIMEOUT_SECONDS = 5.0
 
 #: Row count at and above which the widget switches to the windowed source.
 DEFAULT_LARGE_THRESHOLD = 100_000
@@ -130,6 +136,8 @@ class LatticeGridWidget(anywidget.AnyWidget):
         self._force_windowed = windowed
         self._engine = None
         self._router_obj: LatticeRouter | None = None
+        self._got_shaped = False  # router: has the browser reported shaped rows yet?
+        self._view_timeout = VIEW_TIMEOUT_SECONDS  # tests may shorten this
         self.route = route
         if isinstance(df, LatticeRouter):
             if route is None and len(df.routes) == 1:
@@ -321,6 +329,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
         columnar = change["new"] or {}
         self._keys = [str(k) for k in columnar.get(S.ROW_KEY, [])]
         self._df = shaped_frame(columnar, self._router_obj._date_fields())
+        self._got_shaped = True
 
     @property
     def router_stats(self) -> dict:
@@ -407,13 +416,65 @@ class LatticeGridWidget(anywidget.AnyWidget):
     @property
     def view(self):
         """The rows passing the grid's filters (quick search included), in the
-        grid's sort order. Before the grid reports, every row.
+        grid's sort order.
+
+        Computed in the kernel from the frame and the grid's own ``state``
+        whenever that is possible (BACKLOG-0004772): correct under ``Run
+        All``/headless execution, where the browser never gets a turn to report
+        back. Once the browser HAS reported its own view (``_view_keys``), that
+        report wins (it may reflect live, in-browser state this kernel never
+        saw). A router's view needs the browser's shaping -- no join/rollup is
+        reimplemented here -- so before its first report this blocks for it,
+        with a timeout, rather than silently handing back the empty placeholder
+        frame; the same timeout guards any state this kernel cannot compute.
 
         Large data (windowed): a :class:`LazyView` -- nothing is materialised
         until you ask (``len(view)``, ``view.head(n)``, ``view.to_pandas()``)."""
         if self._windowed:
             return LazyView(self._engine, self.state)
-        return self._frame_for(self._view_keys)
+        if self._view_keys is not None:
+            return self._frame_for(self._view_keys)
+        if self._router_obj is not None and not self._got_shaped:
+            self._await_browser_report(lambda: self._got_shaped)
+            return self.view
+        try:
+            positions = self._client_view_positions()
+        except (KeyError, ValueError):
+            self._await_browser_report(lambda: self._view_keys is not None)
+            return self.view
+        return self._frame_for([self._keys[p] for p in positions])
+
+    def _client_view_positions(self) -> np.ndarray:
+        """The view's row positions in ``self._df``, with the same filter + quick
+        search + sort semantics as the large-frame engine (``_engine.py``) -- so
+        a plain small frame answers identically without the browser."""
+        st = self.state or {}
+        return PandasEngine(self._df).positions(st.get("filters"), st.get("quick") or "", st.get("sort"))
+
+    def _await_browser_report(self, done, timeout: float | None = None) -> None:
+        """Block, pumping the kernel's own message queue, until ``done()`` is
+        true -- or raise :class:`LatticeViewTimeout` rather than let the caller
+        read a stale or silently empty view."""
+        timeout = self._view_timeout if timeout is None else timeout
+        kernel = None
+        try:
+            from IPython import get_ipython
+            kernel = getattr(get_ipython(), "kernel", None)
+        except Exception:  # noqa: BLE001
+            kernel = None
+        deadline = time.monotonic() + timeout
+        while not done():
+            if kernel is not None and hasattr(kernel, "do_one_iteration"):
+                kernel.do_one_iteration()
+            else:
+                time.sleep(0.05)
+            if time.monotonic() >= deadline:
+                raise LatticeViewTimeout(
+                    "[lattice] widget.view needs the browser to report the grid's view, and "
+                    f"none arrived within {timeout:g}s. This happens with no front end attached "
+                    "(a headless run) or under Run All racing ahead of the browser; render the "
+                    "grid and let it draw once, or avoid state this kernel cannot compute on its "
+                    "own (e.g. a router route, before its first report).")
 
     def _on_state_for_view(self, change: dict) -> None:
         # Windowed: the view is defined by the state, so a state change that
@@ -464,13 +525,21 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
     # --- Python -> grid: live updates -----------------------------------------
     def set_data(self, df: pd.DataFrame) -> None:
-        """Replace the whole DataFrame and repaint the grid (fresh keys, full reload)."""
+        """Replace the whole DataFrame -- columns included -- and repaint the grid
+        (fresh keys, full reload)."""
         self._no_router("set_data")
         frame, engine = self._adopt(df)
         self._df = frame
         self._engine = engine
         # Crossing the threshold either way switches the grid's source.
         self._keys = [] if self._windowed else self._fresh_keys(len(self._df))
+        # A new schema (BACKLOG-0004772): drop sort/filter/column state that
+        # names a column gone, or the engine raises KeyError on the next query
+        # and the grid is left trying to show a column it can no longer load.
+        fields = {c["field"] for c in self._built_columns()}
+        pruned = O.prune_state_for_columns(self.state, fields)
+        if pruned != self.state:
+            self.state = pruned
         self._push_frame()
         self._data_version += 1  # -> grid.rows.load(...) / a fresh windowed source
 

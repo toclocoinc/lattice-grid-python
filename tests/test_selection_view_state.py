@@ -80,6 +80,30 @@ def test_view_follows_the_grids_filter_and_sort_order():
     assert len(w.view) == 0 and list(w.view.columns) == list(w.df.columns)
 
 
+# --- BACKLOG-0004772: w.view computed in the kernel, no browser needed -------
+def test_view_is_computed_from_state_without_the_browser_reporting():
+    # before any grid ever renders (so _view_keys is still None), a filter set
+    # directly in state must still shape w.view -- this is what makes it
+    # correct under Run All / headless execution with no front end at all.
+    w = LatticeGridWidget(_rich_frame())
+    assert w._view_keys is None
+    w.state = {"version": 2, "filters": {"col": "score", "op": "gte", "value": 80}}
+    assert list(w.view["name"]) == ["Ada"]           # Grace's score is <NA>, Linus 77, Ken 50
+    w.state = {**w.state, "sort": [{"col": "name", "dir": "asc"}], "filters": None}
+    assert list(w.view["name"]) == ["Ada", "Grace", "Ken", "Linus"]
+    assert w._view_keys is None                       # still no browser involved
+
+
+def test_view_prefers_the_browsers_report_once_it_arrives():
+    # once the browser DOES report, its keys win even if they disagree with
+    # what the kernel would compute from state alone (e.g. a live quick search
+    # the state snapshot hasn't caught up to yet).
+    w = LatticeGridWidget(_rich_frame())
+    w.state = {"version": 2, "filters": {"col": "score", "op": "gte", "value": 80}}
+    w._view_keys = ["1"]  # the browser's own report, disagreeing with state
+    assert list(w.view["name"]) == ["Grace"]
+
+
 # --- observe: once per change -------------------------------------------------
 def test_observe_selected_and_view_fire_once_per_change():
     w = LatticeGridWidget(_rich_frame())

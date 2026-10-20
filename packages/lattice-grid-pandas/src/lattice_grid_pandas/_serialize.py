@@ -32,6 +32,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from pandas.api import types as pdt
 
@@ -78,6 +79,10 @@ def _jsonable_scalar(v: Any) -> Any:
         return v.isoformat()
     if isinstance(v, (str, bool)):
         return v
+    if isinstance(v, (list, tuple, np.ndarray)):
+        # a list/tuple/ndarray cell (e.g. a sparkline's series) -> a JSON array,
+        # never str(v) (BACKLOG-0004772): a 'line' cell needs real numbers, not text.
+        return [_jsonable_scalar(x) for x in v]
     # numpy scalar -> python scalar
     item = getattr(v, "item", None)
     if callable(item):
