@@ -8,6 +8,14 @@ and are not listed here; a revision above `.0` is.
 
 ### Added
 
+- A DuckDB relation, or `con=` with `table=` or `sql=`, is a grid source: `LatticeGridWidget(con.table("t"))`,
+  `LatticeGridWidget(con=con, sql="SELECT ...")`. Every request the large-data mode answers (row
+  window, sort, each filter operator and quick search, grouping with aggregates and group child
+  windows, header histograms, the Statistics tab, the row count, `w.view` as a lazy handle) runs as
+  SQL on that connection with bound parameters (a value is never spliced into the statement),
+  holding only the requested window in memory, and answers as the Arrow path does. A Parquet path
+  gains `pushdown=True` to take the same route through `read_parquet` instead of loading the file
+  as Arrow. Documented in the README ("DuckDB as the source") and the widget docstring.
 - A data router's shaped view is computed in the kernel, from the source frames and the
   router declaration the widget already holds (field coercion, lookup, collect and rollup
   joins with every aggregate, spread, unnest), so `w.view` (and `w.df`, `w.selected`) return the

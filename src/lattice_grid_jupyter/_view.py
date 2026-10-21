@@ -48,6 +48,9 @@ class LazyView:
         return self._pos
 
     def __len__(self) -> int:
+        count = getattr(self._engine, "count", None)   # a SQL engine counts without listing rows
+        if count is not None:
+            return int(count(self.filters, self.quick))
         return int(len(self.positions()))
 
     @property
@@ -60,6 +63,9 @@ class LazyView:
 
     def slice(self, start: int, stop: int) -> pd.DataFrame:
         """Rows ``start:stop`` of the view as a DataFrame (original index and dtypes)."""
+        rows = getattr(self._engine, "view_rows", None)   # a SQL engine fetches just this slice
+        if rows is not None:
+            return rows(self.filters, self.quick, self.sort, max(0, start), min(stop, len(self)))
         return self._engine.rows_at(self.positions()[start:stop])
 
     def head(self, n: int = 5) -> pd.DataFrame:
@@ -67,7 +73,7 @@ class LazyView:
 
     def to_pandas(self) -> pd.DataFrame:
         """Materialise the whole view. Explicit, because it may be millions of rows."""
-        return self._engine.rows_at(self.positions())
+        return self.slice(0, len(self))
 
     def __repr__(self) -> str:
         total = len(self._engine)
