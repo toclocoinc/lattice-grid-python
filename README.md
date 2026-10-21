@@ -368,7 +368,9 @@ con.execute("""CREATE TABLE events AS
 w = LatticeGridWidget(con.table("events"))                # a relation (con.sql(...), duckdb.sql(...))
 w = LatticeGridWidget(con=con, table="events")            # a connection + a table ("schema.table" works)
 w = LatticeGridWidget(con=con, sql="SELECT * FROM events WHERE day < 5 ORDER BY i")   # or a query
+con.execute("COPY events TO 'events.parquet' (FORMAT parquet)")
 w = LatticeGridWidget("events.parquet", pushdown=True)    # a Parquet path, queried in place
+w = LatticeGridWidget(con.table("events"))                # (back to the relation for the rest)
 
 w.state = {"version": 2, "filters": {"col": "who", "op": "contains", "value": "O'Brien"},
            "sort": [{"col": "amount", "dir": "desc"}]}

@@ -166,6 +166,7 @@ def test_rss_stays_bounded_serving_windows_from_5m_rows(big_con, tmp_path):
             return int(subprocess.check_output(["ps", "-o", "rss=", "-p", str(os.getpid())]).split()[0]) / 1024
         con = duckdb.connect()
         con.execute("SET threads TO 4")
+        con.execute("SET memory_limit TO '300MB'")
         con.execute("CREATE TABLE big AS SELECT i, 'n' || (i % 50000) AS name, (hash(i) % 100000) / 1000.0 AS val, "
                     "i % 7 AS g FROM range({BIG}) t(i)")
         w = LatticeGridWidget(con=con, table="big")

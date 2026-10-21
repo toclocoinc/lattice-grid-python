@@ -306,7 +306,9 @@ class DuckDBEngine(PandasEngine):
     def _fetch_df(self, sql: str, params: dict | None = None) -> pd.DataFrame:
         params = params or {}
         res = self._run(sql, params)
-        df = res.fetch_arrow_table().to_pandas(ignore_metadata=True)
+        # duckdb 2.x renamed fetch_arrow_table to to_arrow_table on a connection
+        to_arrow = getattr(res, "to_arrow_table", None) or res.fetch_arrow_table
+        df = to_arrow().to_pandas(ignore_metadata=True)
         self._log(sql, params, len(df))
         return df
 
@@ -841,11 +843,12 @@ class DuckDBEngine(PandasEngine):
         if has_num:
             num = c.num
             fin = f"isfinite({num})"
-            n, vmin, vmax, mean, med, q1, q3, sd = self._fetch_all(
-                f"SELECT count(*), min({num}), max({num}), avg({num}), quantile_cont({num}, 0.5), "
-                f"quantile_cont({num}, 0.25), quantile_cont({num}, 0.75), stddev_samp({num}) "
-                f"FROM __BASE__ WHERE {where} AND {fin}", q.params)[0]
+            # one list-form quantile shares a single sort (three separate calls hold three copies)
+            n, vmin, vmax, mean, qs, sd = self._fetch_all(
+                f"SELECT count(*), min({num}), max({num}), avg({num}), quantile_cont({num}, [0.25, 0.5, 0.75]), "
+                f"stddev_samp({num}) FROM __BASE__ WHERE {where} AND {fin}", q.params)[0]
             n = int(n)
+            q1, med, q3 = qs if qs else (None, None, None)
             stats = dict(vmin=vmin, vmax=vmax, mean=mean, med=med, q1=q1, q3=q3, sd=sd)
         distinct = int(self._scalar(
             f"SELECT count(DISTINCT {c.num if c.ordered and c.kind != 'datetime' else c.txt}) "
