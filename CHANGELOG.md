@@ -21,6 +21,11 @@ and are not listed here; a revision above `.0` is.
 
 ### Fixed
 
+- `LatticeChart` now follows the notebook host's theme the way the grid does (it kept a
+  white background and light axes under JupyterLab dark): it uses the grid widget's own
+  host-theme detection, so a chart is dark under a dark host and light otherwise, follows a
+  live host switch, and a chart bound to a grid follows that grid's resolved theme. An
+  explicit `theme="dark"` / `"light"` on the chart wins over both.
 - `LatticeChart` bound to a grid now follows the grid's selection live by
   default, as the docs always said: `fan` and `decomposition` redraw over the
   selected rows (restoring all rows once the selection clears) and other types

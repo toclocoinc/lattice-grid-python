@@ -128,6 +128,31 @@ async function render({ model, el }) {
   let aggBusy = false;
   const frame = () => model.get("_mode") === "frame";
 
+  // --- host theme (BACKLOG-0005167) ----------------------------------------
+  // hostTheme() is the grid widget's own detection (spliced in by _chart.py). The
+  // chart draws from the data-theme of its container's ancestors, so the resolved
+  // theme goes on `plot`: an explicit `theme` in the spec wins; a chart bound to a
+  // grid follows that grid's resolved theme; otherwise the notebook host's.
+  const explicitTheme = () => {
+    const t = (model.get("_spec") || {}).theme;
+    return typeof t === "string" && t ? t : null;
+  };
+  const gridTheme = () => {
+    if (frame() || !boundGrid) return null;
+    try { const t = boundGrid.get && boundGrid.get("theme"); return typeof t === "string" && t ? t : null; } catch (e) { return null; }
+  };
+  const syncTheme = () => {
+    const want = explicitTheme() || gridTheme() || hostTheme();
+    if (plot.getAttribute("data-theme") !== want) plot.setAttribute("data-theme", want);
+  };
+  const themeObserver = new MutationObserver(syncTheme);
+  for (const t of [document.body, document.documentElement].filter(Boolean)) {
+    themeObserver.observe(t, { attributes: true, attributeFilter: [
+      "class", "data-jp-theme-light", "data-vscode-theme-kind", "data-theme", "style",
+    ] });
+  }
+  syncTheme();
+
   const fail = (e) => {
     const text = String((e && e.message) || e);
     note.textContent = text;
@@ -223,6 +248,12 @@ async function render({ model, el }) {
     if (mine !== generation || destroyed) return;
     boundGrid = grid;
     const spec = { ...(model.get("_spec") || {}) };
+    delete spec.theme;  // the widget's own option, not a chart spec key
+    if (!frame() && typeof grid.on === "function") {
+      const off = grid.on("config:changed", syncTheme);
+      offGrid.push(typeof off === "function" ? off : () => { grid.off && grid.off("config:changed", syncTheme); });
+    }
+    syncTheme();
     const windowed = !frame() && entryNow && entryNow.windowed();
     const createChart = window.LatticeGrid && window.LatticeGrid.createChart;
     if (typeof createChart !== "function") throw new Error("[lattice] the chart module did not load");
@@ -303,6 +334,7 @@ async function render({ model, el }) {
     for (const ev of watch) model.off(ev, schedule);
     model.off("change:_data_version", onData);
     if (uid && subscribers.get(uid)) subscribers.get(uid).delete(listener);
+    themeObserver.disconnect();
     teardown();
     if (hidden && hidden.destroy) hidden.destroy();
   };

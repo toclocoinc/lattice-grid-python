@@ -70,8 +70,9 @@ WINDOWED_TYPES = frozenset({
     "bar", "horizontalBar", "line", "step", "area", "pie", "donut", "funnel", "waterfall",
 })
 
-#: Spec keys the chart reads that the grid's ``ChartSpec`` declarations omit (F-1619-1).
-UNDECLARED_KEYS = frozenset({"from"})
+#: Spec keys the chart reads that the grid's ``ChartSpec`` declarations omit (F-1619-1);
+#: ``theme`` is the widget's own (an explicit theme wins over the host / bound grid's).
+UNDECLARED_KEYS = frozenset({"from", "theme"})
 
 #: Python owns these: the grid / data and the element the chart draws in.
 RESERVED = ("grid", "container", "rows")
@@ -131,10 +132,18 @@ def _read_modules(names: list[str]) -> dict[str, str]:
     return out
 
 
+def _chart_esm() -> str:
+    """chart.js with the grid widget's host-theme detection spliced in (one copy, not two)."""
+    widget = (_STATIC / "widget.js").read_text(encoding="utf-8")
+    start = widget.index("// <host-theme>")
+    end = widget.index("// </host-theme>")
+    return widget[start:end] + "\n" + (_STATIC / "chart.js").read_text(encoding="utf-8")
+
+
 class LatticeChart(anywidget.AnyWidget):
     """A chart viewer of a grid's dataset (or of a DataFrame). See the module docs."""
 
-    _esm = _STATIC / "chart.js"
+    _esm = _chart_esm()
 
     type = traitlets.Unicode("bar").tag(sync=True)
     """The chart type. Assign to change it live (its module loads on demand)."""
