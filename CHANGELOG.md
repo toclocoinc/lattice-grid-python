@@ -14,6 +14,13 @@ and are not listed here; a revision above `.0` is.
   follow it the grid's own way (emphasis, or zoom for `geomap`). Before this,
   the chart spec never turned selection on, so only an explicit
   `selection=True` worked. `selection=False` turns it off.
+- The widget now follows the notebook host's theme: the grid renders dark under a
+  dark host (JupyterLab dark, VS Code dark, Colab dark) and light otherwise,
+  detecting the host's own theme attributes or computed background (never the OS
+  scheme) and switching live when the host theme changes. An explicit `theme`
+  option still wins over auto-detection. The row-selection checkbox is now drawn
+  by the widget so a tick is clearly distinguishable from an empty box in every
+  theme (it previously rendered as a solid black square under a dark host).
 - `widget.view` on a view only the browser can produce (a router's shaped rows
   before the grid's first report) no longer blocks waiting for the browser --
   on ipykernel 6 that always ended in `LatticeViewTimeout` with a "coroutine
