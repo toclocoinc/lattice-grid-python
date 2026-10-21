@@ -188,7 +188,7 @@ function createCommClient(model) {
 const plain = (q) => JSON.parse(JSON.stringify(q, (k, v) => (k === "signal" ? undefined : v)));
 
 /** The pushdown adapter whose engine is Python (the grid's adapter contract). */
-function pythonAdapter(ask, caps) {
+function pythonAdapter(ask, caps, onGroups) {
   return {
     name: "python",
     capabilities: {
@@ -198,7 +198,7 @@ function pythonAdapter(ask, caps) {
       quick: true,
       range: true,
       total: true,
-      group: false,
+      group: true,
       pivot: false,
       aggregates: caps.aggregates || [],
       mutate: caps.editable ? { update: true, returning: "none" } : false,
@@ -210,6 +210,14 @@ function pythonAdapter(ask, caps) {
     executeGroupedAggregates(query, groupBy, aggregates, opts) {
       return ask("grouped", { query: plain(query), groupBy: plain(groupBy), aggregates: plain(aggregates) },
         opts && opts.signal);
+    },
+    // One level of the grouped view, ordered and windowed in the kernel: the groups under
+    // `query.groupValues`, or the leaf rows of the innermost group.
+    async executeGroupLevel(query, aggregates, request) {
+      const r = await ask("grouplevel", { query: plain(query), aggregates: plain(aggregates) }, request && request.signal);
+      if (r.columnar) return { ...r, rows: rowsFromColumnar(r.columnar), columnar: undefined };
+      if (onGroups && !r.leaves) onGroups(query, r.rows || []);
+      return r;
     },
     executeAggregates(query, aggregates) {
       return ask("aggregates", { query: plain(query), aggregates: plain(aggregates) });
@@ -425,8 +433,34 @@ async function render({ model, el }) {
   const ask = createCommClient(model);
   const windowed = () => model.get("_mode") === "windowed";
   const pageSize = () => model.get("_page_size") || 100;
+  // A remote grouped view asks the grid's expanded-set about a group without the group's row,
+  // so `groupDefaultExpanded` cannot decide it there and every group opens. The adapter sees each
+  // group the moment it arrives, so a group whose default is collapsed is collapsed here, once,
+  // before it is first shown (a later open or close by the user is left alone).
+  const groupKey = (path) => "g" + path.map((v) => "\u0000" + (v === null || v === undefined ? "\u0001" : String(v))).join("");
+  const startsCollapsed = (level) => {
+    const d = appliedOptions && appliedOptions.groupDefaultExpanded;
+    if (d === false) return true;
+    return typeof d === "number" && Number.isFinite(d) && d >= 0 && level >= d;
+  };
+  const defaulted = new Set();
+  let gridRef = null;
+  let queuedCollapse = [];
+  const collapseGroups = (keys) => { for (const k of keys) gridRef.rows.collapse(k); };
+  const onGroups = (query, rows) => {
+    const values = query.groupValues || [];
+    const field = (query.groupBy || [])[values.length];
+    if (field === undefined || !startsCollapsed(values.length)) return;
+    const keys = [];
+    for (const row of rows) {
+      const key = groupKey([...values, row[field]]);
+      if (!defaulted.has(key)) { defaulted.add(key); keys.push(key); }
+    }
+    if (!keys.length) return;
+    if (gridRef) collapseGroups(keys); else queuedCollapse.push(...keys);
+  };
   const pushdown = () => mod.createPushdownSource({
-    adapter: pythonAdapter(ask, model.get("_engine_caps") || {}),
+    adapter: pythonAdapter(ask, model.get("_engine_caps") || {}, onGroups),
     pageSize: pageSize(),
     edit: !!(model.get("_engine_caps") || {}).editable,
   });
@@ -458,6 +492,8 @@ async function render({ model, el }) {
     ...(initialState && Object.keys(initialState).length ? { state: initialState } : {}),
     ...(licence ? { licence } : {}),
   });
+  gridRef = grid;
+  if (queuedCollapse.length) { collapseGroups(queuedCollapse); queuedCollapse = []; }
   host.__latticeGrid = grid; // handle for tests and notebook-side debugging
   host.__latticeAsk = ask;
 
@@ -609,6 +645,7 @@ async function render({ model, el }) {
     grid.set("columns", model.get("_columns"));
     if (mode === "windowed") {
       // A new windowed source: every cached window, count and histogram goes.
+      defaulted.clear();
       grid.set("source", pushdown());
     } else if (shownMode === "windowed") {
       grid.set("source", { mode: "memory", rows: reconstructRows(model) });

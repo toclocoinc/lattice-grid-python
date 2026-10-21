@@ -8,6 +8,9 @@ answers it over the WHOLE frame:
                                   sort applied, plus the matching-row total;
 * ``grouped_aggregates``       -- group-by subtotals (and the distinct values a
                                   filter menu lists: a group-by with a count);
+* ``group_level``              -- one level of a grouped view: the groups under a
+                                  group (ordered by the sort, an aggregate included)
+                                  or the leaf rows of the innermost one;
 * ``aggregates``               -- whole-set statistics;
 * ``facet``                    -- header-histogram buckets and counts;
 * ``profile``                  -- the Statistics panel's per-column profile.
@@ -458,6 +461,22 @@ def condition_mask(col: _Col, cond: dict, direct: bool = False) -> np.ndarray:
 # ----------------------------------------------------------------------------
 # the engine
 # ----------------------------------------------------------------------------
+class _Groups:
+    """The groups of one level (keys, sizes, rows) and the aggregates read off them on demand."""
+
+    def __init__(self, keys, sizes, rows_of, totals, engine):
+        self.keys, self.sizes, self.rows_of, self.totals, self.engine = keys, sizes, rows_of, totals, engine
+        self.order = np.zeros(0, dtype=np.int64)
+        self._values: dict[tuple[str, int], Any] = {}
+
+    def value(self, tid: str, i: int) -> Any:
+        k = (tid, i)
+        if k not in self._values:
+            _, col, fn = self.totals[tid]
+            self._values[k] = self.engine._agg(self.engine.col(col), fn, self.rows_of[i])
+        return self._values[k]
+
+
 class PandasEngine:
     """Every grid query, answered over a whole pandas DataFrame."""
 
@@ -472,6 +491,7 @@ class PandasEngine:
         self._cols: dict[str, _Col] = {}
         self._positions: "OrderedDict[str, np.ndarray]" = OrderedDict()
         self._masks: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        self._group_levels: "OrderedDict[str, _Groups]" = OrderedDict()
         self.version = 0
 
     # --- schema --------------------------------------------------------------
@@ -521,6 +541,7 @@ class PandasEngine:
         self._cols.clear()
         self._positions.clear()
         self._masks.clear()
+        self._group_levels.clear()
         self.version += 1
 
     # --- filter + quick + sort -> positions ------------------------------------
@@ -739,6 +760,99 @@ class PandasEngine:
                     "level": depth,
                     "values": values,
                 })
+        return out
+
+    # --- one level of a grouped view (the adapter's ``executeGroupLevel``) ------
+    def _group_path_positions(self, pos: np.ndarray, group_by: list[str], values: list) -> np.ndarray:
+        """The rows of ``pos`` inside the group named by ``values`` (one per leading key)."""
+        for field, value in zip(group_by, values):
+            if not len(pos):
+                break
+            codes, keys = self._group_codes(field, pos)
+            want = [i for i, k in enumerate(keys) if k == value and (k is None) == (value is None)]
+            pos = pos[np.isin(codes, want)] if want else pos[:0]
+        return pos
+
+    def _ordered_groups(self, pos: np.ndarray, field: str, sort: list[dict], totals: list[tuple[str, str, str]]):
+        """The groups of ``field`` over ``pos`` in the grid's sort order.
+
+        A sort entry that names the grouped column orders the groups by key; one that
+        names an aggregated column orders them by that aggregate. With neither the
+        groups run in key order, as the grid's own fallback does.
+        """
+        codes, keys = self._group_codes(field, pos)
+        order = np.argsort(codes, kind="stable")
+        cuts = np.flatnonzero(np.diff(codes[order])) + 1
+        chunks = [c for c in np.split(order, cuts) if len(c)]
+        rows_of = [pos[c] for c in chunks]
+        first = np.array([r[0] for r in rows_of], dtype=np.int64)
+        group = _Groups(keys=[keys[int(codes[c[0]])] for c in chunks],
+                        sizes=np.array([len(c) for c in chunks], dtype=np.int64),
+                        rows_of=rows_of, totals={t[0]: t for t in totals}, engine=self)
+        lex = []
+        used = False
+        for entry in reversed([e for e in sort if e and e.get("col") is not None]):
+            col = str(entry["col"])
+            desc = entry.get("dir") == "desc"
+            if col == field:
+                lex.append(self._sort_key(self.col(field), first, desc))
+                absent = self.col(field).missing[first]
+            elif col in group.totals:
+                vals = [group.value(col, i) for i in range(len(rows_of))]
+                absent = np.array([v is None for v in vals], dtype=bool)
+                arr = np.array([0.0 if v is None else float(v) for v in vals], dtype=np.float64)
+                lex.append(-arr if desc else arr)
+            else:
+                continue
+            lex.append(~absent if entry.get("nullsFirst") else absent)
+            used = True
+        if not used:
+            lex = [self._sort_key(self.col(field), first, False), self.col(field).missing[first]]
+        group.order = np.lexsort(lex) if len(first) else np.zeros(0, dtype=np.int64)
+        return group
+
+    def group_level(self, query: dict, aggregates: list[dict]) -> dict:
+        """One level of the grouped view: the groups under ``groupValues``, or the leaf rows.
+
+        ``query.groupBy`` are the grouping fields, ``query.groupValues`` the typed keys of the
+        group being opened (empty for the top level) and ``query.range`` the window wanted.
+        A group row is ``{<field>: key, leafCount, totals: {<id>: value}}``; the top level also
+        answers ``matchCount`` and the ``grand`` row. Under the last grouping field the answer is
+        the leaf rows (``columnar``), sorted as the grid sorts them.
+        """
+        group_by = [str(k) for k in (query.get("groupBy") or [])]
+        values = list(query.get("groupValues") or [])
+        sort = query.get("sort") or []
+        filters, quick = query.get("filters"), query.get("quick") or ""
+        pos = self._group_path_positions(np.flatnonzero(self.mask(filters, quick)), group_by, values)
+        rng = query.get("range")
+        start = max(0, int(rng.get("start", 0))) if rng else 0
+        end = max(start, int(rng.get("end", start))) if rng else None
+        if len(values) >= len(group_by):
+            ordered = self.positions(filters, quick, sort)
+            keep = np.zeros(len(self), dtype=bool)
+            keep[pos] = True
+            ordered = ordered[keep[ordered]]
+            return {"columnar": self.window(ordered[start:end]), "total": int(len(ordered)), "leaves": True}
+        field = group_by[len(values)]
+        totals = [(str(a["id"]), str(a["col"]), str(a["fn"])) for a in aggregates]
+        key = query_key("grouplevel", self.version, filters, quick, sort, group_by, values, totals)
+        group = self._group_levels.get(key)
+        if group is None:
+            group = self._group_levels[key] = self._ordered_groups(pos, field, sort, totals)
+            while len(self._group_levels) > _CACHE_SIZE:
+                self._group_levels.popitem(last=False)
+        else:
+            self._group_levels.move_to_end(key)
+        rows = []
+        for gi in group.order[start:end]:
+            gi = int(gi)
+            rows.append({field: group.keys[gi], "leafCount": int(group.sizes[gi]),
+                         "totals": {t[0]: group.value(t[0], gi) for t in totals}})
+        out: dict = {"rows": rows, "total": int(len(group.order)), "leaves": False}
+        if not values:
+            out["matchCount"] = int(len(pos))
+            out["grand"] = {t[0]: self._agg(self.col(t[1]), t[2], pos) for t in totals}
         return out
 
     # --- header histograms (compute/facet.js) ----------------------------------
