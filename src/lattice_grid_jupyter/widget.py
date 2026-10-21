@@ -25,6 +25,20 @@ person scrolls, and sort, filter, quick search, group-by subtotals, filter-menu
 values, header histograms and column profiles are computed here over the whole
 frame (pandas; a Parquet path read by DuckDB, or a Polars frame, held as Arrow); only results
 cross the comm. See ``_engine.py`` and the README's "Large data" section.
+
+DuckDB as the source (BACKLOG-0005164): pass a ``duckdb.DuckDBPyRelation``, or ``con=`` with
+``table=`` or ``sql=``, or a Parquet path with ``pushdown=True``, and the data stays in DuckDB.
+Every request the large-data mode answers (row window, sort, every filter operator, quick search,
+grouping and aggregates, header histograms, the Statistics tab, the row count, ``w.view`` as a lazy
+handle) is a SQL statement with bound parameters -- user values are never spliced into the text --
+and only the requested window is held in Python::
+
+    con = duckdb.connect()
+    w = LatticeGridWidget(con.table("events"))
+    w = LatticeGridWidget(con=con, sql="SELECT * FROM events ORDER BY ts")
+    w = LatticeGridWidget("events.parquet", pushdown=True)
+
+See ``_duckdb_engine.py`` and the README's "DuckDB as the source" section.
 """
 
 from __future__ import annotations
@@ -122,7 +136,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
     def __init__(
         self,
-        df: pd.DataFrame | LatticeRouter,
+        df: "pd.DataFrame | LatticeRouter | Any" = None,
         licence: str = "",
         height: int = 360,
         offline: bool = False,
@@ -137,6 +151,10 @@ class LatticeGridWidget(anywidget.AnyWidget):
         windowed: bool | None = None,
         page_size: int = 100,
         route: str | None = None,
+        con: Any = None,
+        table: str | None = None,
+        sql: str | None = None,
+        pushdown: bool = False,
         **kwargs: Any,
     ):
         self.large_threshold = int(large_threshold)
@@ -155,7 +173,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
             self._router_obj = df
             frame, engine = pd.DataFrame(), None
         else:
-            frame, engine = self._adopt(df)
+            frame, engine = self._adopt(df, con=con, table=table, sql=sql, pushdown=pushdown)
         self._df = frame
         # Stable, monotonic per-row keys. Never reused, never renumbered, so the
         # grid's key set and the DataFrame stay aligned across append/delete.
@@ -250,13 +268,34 @@ class LatticeGridWidget(anywidget.AnyWidget):
             return None
 
     # --- large frames: which mode, which engine -------------------------------
-    def _adopt(self, data: Any):
-        """Accept a pandas frame, a Polars frame or a Parquet path.
+    def _adopt(self, data: Any, con: Any = None, table: str | None = None, sql: str | None = None,
+               pushdown: bool = False):
+        """Accept a pandas frame, a Polars frame, a Parquet path or a DuckDB source.
 
         Returns ``(pandas_frame_or_None, engine_or_None)``. A Polars frame or a
         Parquet path (read by DuckDB) is held as an Arrow table and is never
-        copied into pandas when it is above the threshold.
+        copied into pandas when it is above the threshold. A DuckDB relation, or
+        ``con=`` with ``table=``/``sql=`` (or a Parquet path with ``pushdown=True``),
+        stays in DuckDB: every request is a SQL statement with bound parameters.
         """
+        from ._duckdb_engine import DuckDBEngine, from_parquet, is_duckdb_relation
+        engine = None
+        if data is None and con is not None:
+            engine = DuckDBEngine(con=con, table=table, sql=sql)
+        elif is_duckdb_relation(data):
+            engine = DuckDBEngine(relation=data)
+        elif pushdown and not isinstance(data, pd.DataFrame):
+            from ._arrow_engine import is_parquet_path
+            if not is_parquet_path(data):
+                raise TypeError("pushdown=True applies to a Parquet path (or use a DuckDB relation / con=)")
+            engine = from_parquet(data)
+        elif data is None:
+            raise TypeError("LatticeGridWidget needs a DataFrame, a Parquet path, a DuckDB relation, "
+                            "or con= with table= or sql=")
+        if engine is not None:
+            if self._decide_windowed(len(engine)):
+                return None, engine
+            return engine.to_pandas(), None
         if isinstance(data, pd.DataFrame):
             n = len(data)
             if self._decide_windowed(n):
@@ -271,8 +310,8 @@ class LatticeGridWidget(anywidget.AnyWidget):
             if self._decide_windowed(len(engine)):
                 return None, engine
             return engine.to_pandas(), None
-        raise TypeError("LatticeGridWidget expects a pandas DataFrame, a Polars DataFrame "
-                        "or the path of a Parquet file")
+        raise TypeError("LatticeGridWidget expects a pandas DataFrame, a Polars DataFrame, "
+                        "the path of a Parquet file or a DuckDB relation")
 
     def _decide_windowed(self, n: int) -> bool:
         if self._force_windowed is not None:
@@ -324,7 +363,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
         self._sync_shaped()
         if self._df is None:
             raise AttributeError(
-                "this widget is backed by a Parquet file or a Polars frame (held as Arrow), "
+                "this widget is backed by a Parquet file, a Polars frame or a DuckDB source (not held as pandas), "
                 "so there is no pandas DataFrame to return; use widget.view (lazy) instead")
         return self._df
 
@@ -571,11 +610,12 @@ saw). A router's shaped rows are computed in the kernel too, from the
         self._edit = {"key": str(key), "colId": col_id, "value": value}
 
     # --- Python -> grid: live updates -----------------------------------------
-    def set_data(self, df: pd.DataFrame) -> None:
+    def set_data(self, df: Any = None, *, con: Any = None, table: str | None = None,
+                 sql: str | None = None, pushdown: bool = False) -> None:
         """Replace the whole DataFrame -- columns included -- and repaint the grid
-        (fresh keys, full reload)."""
+        (fresh keys, full reload). Takes the same sources as the constructor."""
         self._no_router("set_data")
-        frame, engine = self._adopt(df)
+        frame, engine = self._adopt(df, con=con, table=table, sql=sql, pushdown=pushdown)
         self._df = frame
         self._engine = engine
         # Crossing the threshold either way switches the grid's source.

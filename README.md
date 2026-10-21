@@ -348,6 +348,54 @@ rows. Details and every figure: [`docs/large-data.md`](docs/large-data.md).
 * `append_rows` / `delete_rows` / `set_data` work above the threshold (the grid
   re-sources itself); `set_data` across the threshold switches the mode.
 
+### DuckDB as the source: every request is SQL
+
+Give the widget a **DuckDB relation**, or a **connection plus a table or a query**, and the
+data never leaves DuckDB. Each request the grid makes (a row window, sort, every filter
+operator, quick search, grouping with aggregates, header histograms, the Statistics tab, the row
+count) becomes one SQL statement on your connection, and only the answer reaches Python: the
+requested window of rows, a list of groups, a few bucket counts.
+
+```python
+import duckdb
+from lattice_grid_jupyter import LatticeGridWidget
+
+con = duckdb.connect()
+con.execute("""CREATE TABLE events AS
+               SELECT i, 'user ' || (i % 5000) AS who, i % 7 AS day, random() * 100 AS amount
+               FROM range(5000000) t(i)""")
+
+w = LatticeGridWidget(con.table("events"))                # a relation (con.sql(...), duckdb.sql(...))
+w = LatticeGridWidget(con=con, table="events")            # a connection + a table ("schema.table" works)
+w = LatticeGridWidget(con=con, sql="SELECT * FROM events WHERE day < 5 ORDER BY i")   # or a query
+w = LatticeGridWidget("events.parquet", pushdown=True)    # a Parquet path, queried in place
+
+w.state = {"version": 2, "filters": {"col": "who", "op": "contains", "value": "O'Brien"},
+           "sort": [{"col": "amount", "dir": "desc"}]}
+v = w.view        # a lazy handle: len(v) is a count(*), v.head(20) fetches 20 rows
+len(v), v.head(5)
+```
+
+* **Values are bound.** Every user value (a filter value, a quick-search term, a range bound, a
+  window offset) is a prepared-statement parameter, never part of the SQL text, so a value
+  containing a quote is just a value. The only text taken from a request is a column name, and
+  only when it is one of the source's columns (then quoted).
+* **Same answers as the Arrow path.** The filter operators, case rules, missing-value ordering,
+  histogram buckets and profile figures are the ones the Python engine already uses; tests hold
+  them equal on a seeded sample and run a 5,000,000-row table through every request kind, reading
+  the statements back from `w._engine.sql_log` (each entry is `(sql, params, rows_returned)`).
+* **Memory.** Only the window being shown is held in Python. The unfiltered, unsorted window is
+  a plain `LIMIT/OFFSET`.
+* **Row identity** is the row's position in the source, counted by DuckDB in scan order. That is
+  stable for a table or a file; give a `sql=` query an `ORDER BY` if its order must be repeatable.
+* **Read-only**, like the Parquet and Polars inputs; `w.df` is not available (use `w.view`).
+  Below `large_threshold` rows a DuckDB source is read into pandas like any frame, unless you pass
+  `windowed=True`.
+* **Cost.** A new filter is one DuckDB pass (about a second on 5M rows). A sort is a top-N
+  query; jumping far into a sorted view of a text column sorts all of it (seconds).
+* A `sql=` string is SQL you wrote: it is run as given. A `pushdown=True` Parquet path needs
+  `duckdb`, as the `[large]` extra installs it.
+
 ## Licensing
 
 The grid renders **fully and unwatermarked on `localhost`** (the normal
