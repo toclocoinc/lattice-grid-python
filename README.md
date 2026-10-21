@@ -147,6 +147,27 @@ with `options={"selection": "single"}`).
 3. Type in the grid's search box, then `w.view` is the matching rows in the order
    you see them. `w.view.to_csv("shown.csv")` exports what is on screen.
 
+**Views only the browser can compute (a data router's shaped rows).** Most views
+are computed in Python from the frame and the grid's state, so `w.view` returns at
+once, in any cell, under Run All and with no browser. A router's shaped view
+(joins, rollups, spreads) is computed by the browser. Reading `w.view` for it
+before the browser has reported raises `LatticeViewNeedsBrowser` straight away,
+never a wait or a hang: a notebook cell cannot receive the browser's reply while
+it is still running. Read it in a later cell once the grid has rendered, or have it
+delivered when it arrives:
+
+```python
+from lattice_grid_jupyter import LatticeViewNeedsBrowser
+
+try:
+    rows = w.view
+except LatticeViewNeedsBrowser:
+    rows = None                     # read it in a later cell, or:
+
+handle = w.on_view(lambda view: print(len(view), "shaped rows"))
+# ... called each time the browser reports a new view; handle.remove() stops it
+```
+
 ## Grid options from Python
 
 ```python
