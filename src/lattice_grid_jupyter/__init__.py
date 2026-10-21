@@ -10,4 +10,4 @@ __all__ = [
     "LatticeGridWidget", "LatticeChart", "LatticeRouter", "LatticeGridWarning",
     "LatticeViewTimeout", "GRID_VERSION", "__version__",
 ]
-__version__ = "1.108.1.0"
+__version__ = "1.109.0.0"
