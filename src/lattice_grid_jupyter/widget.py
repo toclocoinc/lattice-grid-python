@@ -46,6 +46,7 @@ from . import _serialize as S
 from ._engine import AGGREGATES, OPERATORS, PandasEngine
 from ._options import LatticeGridWarning
 from ._router import LatticeRouter, shaped_frame
+from ._router_engine import RouterEngineUnsupported
 from ._view import LatticeViewNeedsBrowser, LazyView
 
 #: Row count at and above which the widget switches to the windowed source.
@@ -143,6 +144,8 @@ class LatticeGridWidget(anywidget.AnyWidget):
         self._engine = None
         self._router_obj: LatticeRouter | None = None
         self._got_shaped = False  # router: has the browser reported shaped rows yet?
+        self._kernel_version: int | None = None  # router: the router.updates the kernel last shaped at
+        self._kernel_ok = False  # router: can the kernel shape this route itself (no browser needed)?
         self.route = route
         if isinstance(df, LatticeRouter):
             if route is None and len(df.routes) == 1:
@@ -318,6 +321,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
 
         Over a Parquet path or a Polars frame above the threshold there is no
         pandas frame (the data stays where it is): use ``view`` instead."""
+        self._sync_shaped()
         if self._df is None:
             raise AttributeError(
                 "this widget is backed by a Parquet file or a Polars frame (held as Arrow), "
@@ -329,12 +333,35 @@ class LatticeGridWidget(anywidget.AnyWidget):
         """True when the grid is a windowed view answered by Python (large data)."""
         return self._windowed
 
-    # --- the data router: shaped rows come back from the browser -------------------
-    def _on_shaped(self, change: dict) -> None:
-        columnar = change["new"] or {}
+    # --- the data router: shaped rows, computed in the kernel ----------------------
+    def _sync_shaped(self) -> bool:
+        """Shape the route's rows here, from the source frames and the declaration (BACKLOG-0005044),
+        whenever the router has changed since the last time. ``False`` when only the browser can
+        (see ``RouterEngineUnsupported``): the browser's report is then what ``df``/``view`` read."""
+        router = self._router_obj
+        if router is None:
+            return False
+        if self._kernel_version != router.updates:
+            self._kernel_version = router.updates
+            try:
+                columnar = router.shaped(self.route)
+            except RouterEngineUnsupported:
+                self._kernel_ok = False
+            else:
+                self._kernel_ok = True
+                self._apply_shaped(columnar)
+        return self._kernel_ok
+
+    def _apply_shaped(self, columnar: dict) -> None:
         self._keys = [str(k) for k in columnar.get(S.ROW_KEY, [])]
         self._df = shaped_frame(columnar, self._router_obj._date_fields())
         self._got_shaped = True
+
+    def _on_shaped(self, change: dict) -> None:
+        if self._kernel_ok:   # the kernel's rows are the browser's (tests/test_router_parity.py)
+            return
+        columnar = change["new"] or {}
+        self._apply_shaped(columnar)
 
     @property
     def router_stats(self) -> dict:
@@ -413,6 +440,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
         """The selected rows as a DataFrame (original index and dtypes), in frame
         order. An empty frame -- never None -- when nothing is selected."""
         chosen = set(map(str, self._selected_keys))
+        self._sync_shaped()
         if self._windowed:
             return self._frame_for(sorted(chosen, key=lambda k: int(k) if k.isdigit() else -1))
         keys = [k for k in self._keys if k in chosen]
@@ -428,12 +456,18 @@ class LatticeGridWidget(anywidget.AnyWidget):
         All``/headless execution, where the browser never gets a turn to report
         back. Once the browser HAS reported its own view (``_view_keys``), that
         report wins (it may reflect live, in-browser state this kernel never
-        saw).
+saw). A router's shaped rows are computed in the kernel too, from the
+        source frames and the router declaration (collect/lookup/rollup/spread
+        joins, unnest, field coercion: ``_router_engine``, held to the grid's
+        data router row for row by ``tests/test_router_parity.py``), so a router
+        view needs no browser either.
 
-        A view only the browser can produce -- a router's shaped rows before
-        the grid's first report, or a filter/sort this kernel cannot evaluate
-        -- raises :class:`LatticeViewNeedsBrowser` **at once** (BACKLOG-0005030):
-        this property never waits for the browser, on any ipykernel version.
+        A view only the browser can produce -- a router declaration the kernel
+        cannot reproduce (a text date with no ``format`` that only the
+        browser's own ``Date`` parser reads) before the grid's first report, or
+        a filter/sort this kernel cannot evaluate -- raises
+        :class:`LatticeViewNeedsBrowser` **at once** (BACKLOG-0005030): this
+        property never waits for the browser, on any ipykernel version.
         Read ``widget.view`` again in a later cell once the grid has rendered,
         or use ``widget.on_view(callback)`` to be called the moment the report
         arrives.
@@ -442,6 +476,7 @@ class LatticeGridWidget(anywidget.AnyWidget):
         until you ask (``len(view)``, ``view.head(n)``, ``view.to_pandas()``)."""
         if self._windowed:
             return LazyView(self._engine, self.state)
+        self._sync_shaped()
         if self._view_keys is not None:
             return self._frame_for(self._view_keys)
         if self._router_obj is not None and not self._got_shaped:

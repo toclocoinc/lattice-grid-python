@@ -23,11 +23,13 @@ LatticeRouter -- the grid's data router, declared from Python (card 1620).
     router.update("txn", df_t2)    # a keyed diff: only the affected customers re-emit
     w.view                         # the shaped rows, as a DataFrame (a feature table)
 
-The router runs in the browser on the grid's own ``data-router`` module: join,
-rollup-onto-parent, spread, unnest and field coercion are that module's semantics,
-not a Python reimplementation. This file only declares the specs as data
-(``snake_case`` accepted, an unknown key reported by name, functions refused),
-validates them, and computes the keyed diff ``update`` sends.
+The grid shows the rows the browser shapes on its own ``data-router`` module: join,
+rollup-onto-parent, spread, unnest and field coercion are that module's semantics.
+``w.view`` / ``w.df`` do not wait for the browser: ``shaped`` computes the same rows in
+the kernel (``_router_engine.py``, held to the module row for row by
+``tests/test_router_parity.py``). This file declares the specs as data (``snake_case``
+accepted, an unknown key reported by name, functions refused), validates them, and
+computes the keyed diff ``update`` sends.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ import pandas as pd
 
 from . import _serialize as S
 from ._options import LatticeGridWarning
+from ._router_engine import shape_route
 
 _SNAKE = re.compile(r"_([a-z0-9])")
 
@@ -236,6 +239,7 @@ class LatticeRouter:
         self._routes = self._routes_from(routes, known)
         self._widgets: list[weakref.ref] = []
         self.updates = 0
+        self._shaped_cache: dict[str, tuple[int, dict]] = {}
 
     @staticmethod
     def _routes_from(routes: dict | None, known: set) -> dict[str, str]:
@@ -268,10 +272,12 @@ class LatticeRouter:
     def _load_order(self) -> list[str]:
         """Sources other sources join FROM first, so the browser settles each parent once."""
         order: list[str] = []
+        visiting: set[str] = set()   # a join cycle is refused by the router, but must not loop here
 
         def visit(n: str) -> None:
-            if n in order or n not in self._sources:
+            if n in order or n in visiting or n not in self._sources:
                 return
+            visiting.add(n)
             for j in ([self._sources[n].options["join"]] if isinstance(self._sources[n].options.get("join"), dict)
                       else self._sources[n].options.get("join") or []):
                 visit(j.get("from"))
@@ -287,6 +293,15 @@ class LatticeRouter:
             "loadOrder": self._load_order(),
             "sources": {n: {"columnar": s.columnar(), "options": s.options} for n, s in self._sources.items()},
         }
+
+    def shaped(self, route: str) -> dict:
+        """The route's shaped rows, columnar (``__row_id__`` plus one list per field), computed here
+        from the current source frames. Raises ``RouterEngineUnsupported`` for the few declarations
+        only the browser can shape."""
+        hit = self._shaped_cache.get(route)
+        if hit is None or hit[0] != self.updates:
+            hit = self._shaped_cache[route] = (self.updates, shape_route(self._payload(route)))
+        return hit[1]
 
     def _date_fields(self) -> set[str]:
         out: set[str] = set()

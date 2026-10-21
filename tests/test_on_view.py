@@ -15,7 +15,10 @@ CUST = pd.DataFrame({"cid": ["a", "b", "c"], "name": ["A", "B", "C"]})
 
 
 def _router_widget():
-    return LatticeGridWidget(LatticeRouter(sources={"customer": {"data": CUST, "key": "cid"}}))
+    # a date text only the browser's own Date parser reads: the kernel cannot shape it (BACKLOG-0005044)
+    data = pd.DataFrame({"cid": ["a", "b", "c"], "d": ["Jan 5, 2024", "Feb 6, 2024", "Mar 7, 2024"]})
+    return LatticeGridWidget(LatticeRouter(sources={"customer": {"data": data, "key": "cid",
+                                                                 "fields": {"d": "date"}}}))
 
 
 def test_sync_view_raises_a_named_error_at_once_for_a_browser_only_view():
@@ -53,7 +56,7 @@ def test_on_view_does_not_fire_until_the_browsers_report_arrives_for_a_router():
 
     # the browser's report, delivered as a separate message (a trait change),
     # not from inside a running cell -- exactly what the real comm handler does
-    w._shaped = {S.ROW_KEY: ["a", "b"], "cid": ["a", "b"]}
+    w._shaped = {S.ROW_KEY: ["a", "b"], "cid": ["a", "b"], "d": [0, 0]}
 
     assert len(seen) == 1
     assert list(seen[0]["cid"]) == ["a", "b"]

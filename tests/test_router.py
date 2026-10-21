@@ -85,11 +85,21 @@ def test_a_router_backed_grid_refuses_the_dataframe_mutators():
             call()
 
 
+# --- BACKLOG-0005044: the kernel shapes the route itself, so the view needs no browser
+def test_view_is_the_shaped_rows_with_no_browser():
+    r = LatticeRouter(sources={"customer": {"data": CUST, "key": "cid"}})
+    w = LatticeGridWidget(r)
+    assert list(w.view.name) == ["A", "B", "C"] and w._shaped == {}   # nothing ever came back from a front end
+    assert list(w.df.columns) == ["cid", "name"]
+
+
 # --- BACKLOG-0005030: w.view never waits; the browser-only view has a named error
 def test_view_raises_a_named_error_at_once_for_a_browser_only_view():
     import time
     from lattice_grid_jupyter import LatticeViewNeedsBrowser
-    r = LatticeRouter(sources={"customer": {"data": CUST, "key": "cid"}})
+    # a date text only the browser's own Date parser reads: not reproduced in the kernel
+    r = LatticeRouter(sources={"v": {"data": pd.DataFrame({"i": ["1"], "d": ["Jan 5, 2024"]}), "key": "i",
+                                     "fields": {"d": "date"}}})
     w = LatticeGridWidget(r)
     t0 = time.monotonic()
     with pytest.raises(LatticeViewNeedsBrowser, match="on_view"):
@@ -316,14 +326,9 @@ def test_every_python_block_in_docs_router_runs_as_written():
             continue  # a shape sketch, not a runnable block
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            if "features = w.view" in block:
-                # the browser has not shaped anything yet in a bare Python run: give the widget the
-                # shaped rows the way the browser reports them (the real round trip is the tests above)
-                ns["w"]._shaped = {"__row_id__": ["customer:C000"], "n_txn": [2], "spend": [3.0],
-                                   "biggest": [2.0], "churned": [True]}
             if "router.update" in block:
                 ns["w"].send = lambda msg, buffers=None: None
             exec(compile(block, "docs/router.md", "exec"), ns)  # noqa: S102
         ran += 1
-    assert ran == 4 and isinstance(ns["router"], LatticeRouter) and ns["X"].shape == (1, 3)
+    assert ran == 4 and isinstance(ns["router"], LatticeRouter) and ns["X"].shape == (40, 3)   # w.view in a bare Python run: the kernel shaped it, no browser
     assert ns["router"].update("txn", ns["txns"]) == {"added": 0, "updated": 1, "removed": 0}

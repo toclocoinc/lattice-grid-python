@@ -6,6 +6,19 @@ and are not listed here; a revision above `.0` is.
 
 ## Unreleased
 
+### Added
+
+- A data router's shaped view is computed in the kernel, from the source frames and the
+  router declaration the widget already holds (field coercion, lookup, collect and rollup
+  joins with every aggregate, spread, unnest), so `w.view` (and `w.df`, `w.selected`) return the
+  shaped DataFrame synchronously under `Run All`, in nbconvert/papermill and with no browser. It
+  follows the grid's data router module's semantics, and a parity test runs the same declaration
+  through the vendored module under node and through the kernel and compares row for row. A
+  text date with no `format` that only the browser's own `Date` parser reads is the one
+  declaration still shaped by the browser: `w.view` raises `LatticeViewNeedsBrowser` at once
+  until the browser reports (read it in a later cell, or use `w.on_view`). A join cycle in a router declaration no longer
+  overflows the stack while ordering the sources.
+
 ### Fixed
 
 - `LatticeChart` bound to a grid now follows the grid's selection live by
