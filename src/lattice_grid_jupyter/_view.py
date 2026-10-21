@@ -14,14 +14,14 @@ import numpy as np
 import pandas as pd
 
 
-class LatticeViewTimeout(RuntimeError):
-    """``widget.view`` could not be computed in the kernel from its own frame and
-    state, and the browser never reported its own view within the timeout
-    (BACKLOG-0004772) -- e.g. a router-shaped view before the grid's first
-    report, with no front end attached (headless ``nbconvert``/CI) or under
-    ``Run All`` outrunning it. Raised rather than silently returning an empty
-    or stale view.
-    """
+class LatticeViewNeedsBrowser(RuntimeError):
+    """``widget.view`` is a view only the browser can produce (e.g. a router's
+    shaped rows before the grid's first report, or a filter/sort the kernel
+    cannot evaluate itself) -- BACKLOG-0005030. ``widget.view`` never waits for
+    the browser (no cell can safely block on it, on any ipykernel): it raises
+    this at once. The browser reports it between cells -- read ``widget.view``
+    again in a later cell once the grid has rendered, or register
+    ``widget.on_view(callback)`` to be called the moment the report arrives."""
 
 
 class LazyView:

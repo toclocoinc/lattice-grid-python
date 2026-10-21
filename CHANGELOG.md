@@ -15,6 +15,17 @@ and are not listed here; a revision above `.0` is.
   option still wins over auto-detection. The row-selection checkbox is now drawn
   by the widget so a tick is clearly distinguishable from an empty box in every
   theme (it previously rendered as a solid black square under a dark host).
+- `widget.view` on a view only the browser can produce (a router's shaped rows
+  before the grid's first report) no longer blocks waiting for the browser --
+  on ipykernel 6 that always ended in `LatticeViewTimeout` with a "coroutine
+  'Kernel.do_one_iteration' was never awaited" warning, and no wait is safe
+  inside a running cell on any ipykernel. It now raises `LatticeViewNeedsBrowser`
+  at once, naming the fix: read `widget.view` again in a later cell once the
+  grid has rendered, or register the new `widget.on_view(callback)`, called
+  with the view each time the browser reports one (and immediately if one is
+  already known) from the kernel's normal comm handling between cells -- this
+  works on every ipykernel version. Views the kernel can compute are unchanged
+  and still return immediately.
 
 ## 1.109.0.0
 
