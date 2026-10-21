@@ -15,9 +15,30 @@ and are not listed here; a revision above `.0` is.
   follows the grid's data router module's semantics, and a parity test runs the same declaration
   through the vendored module under node and through the kernel and compares row for row. A
   text date with no `format` that only the browser's own `Date` parser reads is the one
-  declaration still shaped by the browser: `w.view` waits for its report and raises
-  `LatticeViewTimeout` if none arrives. A join cycle in a router declaration no longer
+  declaration still shaped by the browser: `w.view` raises `LatticeViewNeedsBrowser` at once
+  until the browser reports (read it in a later cell, or use `w.on_view`). A join cycle in a router declaration no longer
   overflows the stack while ordering the sources.
+
+### Fixed
+
+- The widget now follows the notebook host's theme: the grid renders dark under a
+  dark host (JupyterLab dark, VS Code dark, Colab dark) and light otherwise,
+  detecting the host's own theme attributes or computed background (never the OS
+  scheme) and switching live when the host theme changes. An explicit `theme`
+  option still wins over auto-detection. The row-selection checkbox is now drawn
+  by the widget so a tick is clearly distinguishable from an empty box in every
+  theme (it previously rendered as a solid black square under a dark host).
+- `widget.view` on a view only the browser can produce (a router's shaped rows
+  before the grid's first report) no longer blocks waiting for the browser --
+  on ipykernel 6 that always ended in `LatticeViewTimeout` with a "coroutine
+  'Kernel.do_one_iteration' was never awaited" warning, and no wait is safe
+  inside a running cell on any ipykernel. It now raises `LatticeViewNeedsBrowser`
+  at once, naming the fix: read `widget.view` again in a later cell once the
+  grid has rendered, or register the new `widget.on_view(callback)`, called
+  with the view each time the browser reports one (and immediately if one is
+  already known) from the kernel's normal comm handling between cells -- this
+  works on every ipykernel version. Views the kernel can compute are unchanged
+  and still return immediately.
 
 ## 1.109.0.0
 

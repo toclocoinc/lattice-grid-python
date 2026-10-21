@@ -14,7 +14,8 @@ import lattice_grid_jupyter
 
 _STATIC = pathlib.Path(lattice_grid_jupyter.__file__).parent / "static"
 
-_TMPL = """<!doctype html><html><head><meta charset=utf-8></head><body>
+_TMPL = """<!doctype html><html><head><meta charset=utf-8>__HEAD__</head>
+<body __BODY_ATTRS__>
 <div id=root></div>
 <script>
 const state = __STATE__; const L = {}; window.__sets = [];
@@ -46,11 +47,20 @@ __WIDGET__
 </body></html>"""
 
 
-def page_html(widget) -> str:
+def page_html(widget, body_attrs: str = "", head: str = "") -> str:
+    """The widget's front end in a bare page with a mock model.
+
+    ``body_attrs`` are placed on ``<body>`` (a dark host theme, e.g.
+    ``data-jp-theme-light="false"``) and ``head`` is extra ``<head>`` markup (a
+    dark host stylesheet), for the host-theme tests (BACKLOG-0005025).
+    """
     widget_js = (_STATIC / "widget.js").read_text().replace("export default", "window.__widget =")
     state = {k: v for k, v in widget.get_state().items() if not k.startswith("_esm") and k != "_css"}
     state.setdefault("_edit", None)
-    return _TMPL.replace("__STATE__", json.dumps(state)).replace("__WIDGET__", widget_js)
+    return (_TMPL.replace("__STATE__", json.dumps(state))
+                 .replace("__WIDGET__", widget_js)
+                 .replace("__BODY_ATTRS__", body_attrs)
+                 .replace("__HEAD__", head))
 
 
 def sets(page, key=None):
