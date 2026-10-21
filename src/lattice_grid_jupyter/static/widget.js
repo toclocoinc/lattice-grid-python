@@ -24,6 +24,99 @@
 
 const CDN_BASE = (v) => `https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@${v}`;
 
+/**
+ * BACKLOG-0005025: the grid follows the notebook host's theme. The host is
+ * detected from its theme attributes or its computed page background -- never
+ * the OS scheme, which can disagree with the notebook (JupyterLab dark theme,
+ * VS Code dark, Colab dark). Returns "dark" or "light".
+ */
+function hostTheme() {
+  const root = document.documentElement;
+  const body = document.body;
+  const attr = (el, name) => (el && el.getAttribute(name)) || "";
+  // Host theme attributes: JupyterLab's data-jp-theme-light, VS Code's
+  // data-vscode-theme-kind, and a generic data-theme (checked on body, then html).
+  for (const el of [body, root]) {
+    const jp = attr(el, "data-jp-theme-light").toLowerCase();
+    if (jp === "true") return "light";
+    if (jp === "false") return "dark";
+    const vsc = attr(el, "data-vscode-theme-kind").toLowerCase();
+    if (vsc) return /dark|highcontrast/i.test(vsc) ? "dark" : "light";
+    const dt = attr(el, "data-theme").toLowerCase();
+    if (dt === "dark" || dt === "light") return dt;
+  }
+  // Host theme classes: VS Code's vscode-*, Colab's dark-theme, and the like.
+  const classes = ((body && body.className) || "") + " " + ((root && root.className) || "");
+  if (/vscode-dark|vscode-high-contrast|dark-theme|theme-dark/i.test(classes)) return "dark";
+  if (/vscode-light|light-theme|theme-light/i.test(classes)) return "light";
+  // Fall back to the page's computed background.
+  return isDark(pageBackground()) ? "dark" : "light";
+}
+
+function pageBackground() {
+  const bg = (el) => {
+    if (!el) return "";
+    const c = getComputedStyle(el).backgroundColor;
+    return c && !/transparent|rgba\(0,\s*0,\s*0,\s*0\)/i.test(c) ? c : "";
+  };
+  return bg(document.body) || bg(document.documentElement) || "rgb(255, 255, 255)";
+}
+
+function isDark(bg) {
+  const m = /rgba?\(([^)]+)\)/.exec(bg || "");
+  if (!m) return false;
+  const [r, g, b] = m[1].split(/[,\s]+/).map(Number).filter((n) => !Number.isNaN(n));
+  if (r === undefined || g === undefined || b === undefined) return false;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
+}
+
+function injectStyleOnce(id, css) {
+  if (document.querySelector(`style[${id}]`)) return;
+  const style = document.createElement("style");
+  style.setAttribute(id, "1");
+  style.textContent = css;
+  document.head.appendChild(style);
+}
+
+// The selection checkbox is drawn here, not by the native control: a native
+// checkbox's appearance follows the page's color-scheme, which can disagree
+// with the grid's theme (a light grid inside a dark host, for instance) and
+// leave ticked and unticked boxes alike. The box border and the tick use the
+// grid's own tokens, so each keeps >= 3:1 contrast against the cell in every
+// theme; the tick is the theme's accent-contrast colour (painted by the SVG
+// stroke, since an `<input>` cannot carry a `::after` pseudo-element).
+const tickSvg = (stroke) =>
+  `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='${stroke}' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
+const CHECKBOX_CSS = `
+.lattice .lat-checkbox-input {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  width: var(--lattice-control-size, 16px);
+  height: var(--lattice-control-size, 16px);
+  border: 2px solid var(--lattice-foreground-muted, #5b6670);
+  border-radius: var(--lattice-radius-sm, 2px);
+  background-color: var(--lattice-surface, #f7f8f9);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 78% 78%;
+}
+.lattice .lat-checkbox-input:checked {
+  background-color: var(--lattice-accent, #1a6bc7);
+  border-color: var(--lattice-accent, #1a6bc7);
+  background-image: ${tickSvg("%23ffffff")};
+}
+.lattice[data-theme="dark"] .lat-checkbox-input:checked {
+  background-image: ${tickSvg("%2306101b")};
+}
+.lattice[data-theme="high-contrast"] .lat-checkbox-input:checked {
+  background-image: ${tickSvg("%23000000")};
+}
+.lattice[data-theme="terminal"] .lat-checkbox-input:checked {
+  background-image: ${tickSvg("%2306120a")};
+}
+`;
+
 function reconstructRows(model) {
   const columnar = model.get("_columnar") || {};
   const keys = columnar["__row_id__"] || [];
@@ -362,6 +455,34 @@ async function render({ model, el }) {
   });
   host.__latticeGrid = grid; // handle for tests and notebook-side debugging
   host.__latticeAsk = ask;
+
+  // --- host theme (BACKLOG-0005025) -----------------------------------------
+  // An explicit `theme` option wins; otherwise the grid follows the notebook
+  // host's theme and keeps following it when the host switches. Setting the
+  // theme through the grid (rather than a data-theme on `host`) also sets the
+  // grid's own color-scheme, so the checkbox below can rely on the grid tokens.
+  injectStyleOnce("data-lattice-widget-css", CHECKBOX_CSS);
+  const explicitTheme = () => {
+    const t = appliedOptions && appliedOptions.theme;
+    return typeof t === "string" && t ? t : null;
+  };
+  const applyAutoTheme = () => {
+    if (explicitTheme()) return;
+    const want = hostTheme();
+    let current = null;
+    try { current = grid.get ? grid.get("theme") : null; } catch (e) { /* non-fatal */ }
+    if (current === want) return;
+    try { grid.set("theme", want); } catch (e) { /* non-fatal */ }
+  };
+  applyAutoTheme();
+  const themeTargets = [document.body, document.documentElement].filter(Boolean);
+  const themeObserver = new MutationObserver(() => applyAutoTheme());
+  for (const t of themeTargets) {
+    themeObserver.observe(t, { attributes: true, attributeFilter: [
+      "class", "data-jp-theme-light", "data-vscode-theme-kind", "data-theme", "style",
+    ] });
+  }
+
   let routerOff = () => {};
   if (routed) {
     host.__latticeRouter = routed;
@@ -599,12 +720,14 @@ async function render({ model, el }) {
     if ("facets" in values && values.facets) values.facets = withProvider({ facets: values.facets }).facets;
     if (typeof grid.setAll === "function") grid.setAll(values);
     else for (const k of Object.keys(values)) grid.set(k, values[k]);
+    applyAutoTheme();  // an explicit theme added/removed here wins or hands back to the host
     setTimeout(reportWarnings, 0);
   };
   model.on("change:_grid_options", onOptions);
 
   return () => {
     routerOff();
+    themeObserver.disconnect();
     if (uid && registry.grids.get(uid) && registry.grids.get(uid).grid === grid) registry.grids.delete(uid);
     ask.dispose();
     model.off("change:_grid_options", onOptions);

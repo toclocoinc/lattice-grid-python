@@ -4,6 +4,18 @@ Wrapper versions are `<grid version>.<revision>` (see `RELEASING.md`). Automatic
 grid bumps (`Lattice Grid X -> Python wrappers X.0`) change only the vendored grid
 and are not listed here; a revision above `.0` is.
 
+## Unreleased
+
+### Fixed
+
+- The widget now follows the notebook host's theme: the grid renders dark under a
+  dark host (JupyterLab dark, VS Code dark, Colab dark) and light otherwise,
+  detecting the host's own theme attributes or computed background (never the OS
+  scheme) and switching live when the host theme changes. An explicit `theme`
+  option still wins over auto-detection. The row-selection checkbox is now drawn
+  by the widget so a tick is clearly distinguishable from an empty box in every
+  theme (it previously rendered as a solid black square under a dark host).
+
 ## 1.109.0.0
 
 Lattice Grid 1.109.0. `lattice-grid-pandas`, `lattice-grid-jupyter` and
