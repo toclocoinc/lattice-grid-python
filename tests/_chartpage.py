@@ -10,6 +10,7 @@ import json
 import pathlib
 
 import lattice_grid_jupyter
+from lattice_grid_jupyter._chart import _chart_esm
 
 _STATIC = pathlib.Path(lattice_grid_jupyter.__file__).parent / "static"
 
@@ -60,8 +61,9 @@ __WIDGET__
 def page_html(widgets) -> str:
     parts = []
     for i, w in enumerate(widgets):
-        js_name = "chart.js" if type(w).__name__ == "LatticeChart" else "widget.js"
-        js = (_STATIC / js_name).read_text().replace("export default", f"window.__w{i} =")
+        # the chart's front end is what the widget ships: chart.js plus the host-theme block
+        js = (_chart_esm() if type(w).__name__ == "LatticeChart" else (_STATIC / "widget.js").read_text())
+        js = js.replace("export default", f"window.__w{i} =")
         state = {k: v for k, v in w.get_state().items() if not k.startswith("_esm") and k != "_css"}
         state.setdefault("_edit", None)
         parts.append(_ONE.replace("__WIDGET__", js).replace("__STATE__", json.dumps(state))

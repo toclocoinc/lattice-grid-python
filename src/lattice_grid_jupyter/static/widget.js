@@ -24,11 +24,14 @@
 
 const CDN_BASE = (v) => `https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@${v}`;
 
+// <host-theme>
 /**
  * BACKLOG-0005025: the grid follows the notebook host's theme. The host is
  * detected from its theme attributes or its computed page background -- never
  * the OS scheme, which can disagree with the notebook (JupyterLab dark theme,
- * VS Code dark, Colab dark). Returns "dark" or "light".
+ * VS Code dark, Colab dark). Returns "dark" or "light". The chart front end
+ * (BACKLOG-0005167) reuses this block: _chart.py splices it in between the
+ * host-theme markers, so there is one copy.
  */
 function hostTheme() {
   const root = document.documentElement;
@@ -69,6 +72,8 @@ function isDark(bg) {
   if (r === undefined || g === undefined || b === undefined) return false;
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
 }
+
+// </host-theme>
 
 function injectStyleOnce(id, css) {
   if (document.querySelector(`style[${id}]`)) return;
