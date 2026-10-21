@@ -85,14 +85,16 @@ def test_a_router_backed_grid_refuses_the_dataframe_mutators():
             call()
 
 
-# --- BACKLOG-0004772: no silent empty view before the router has shaped anything
-def test_view_blocks_then_raises_a_named_error_if_the_router_never_reports():
-    from lattice_grid_jupyter import LatticeViewTimeout
+# --- BACKLOG-0005030: w.view never waits; the browser-only view has a named error
+def test_view_raises_a_named_error_at_once_for_a_browser_only_view():
+    import time
+    from lattice_grid_jupyter import LatticeViewNeedsBrowser
     r = LatticeRouter(sources={"customer": {"data": CUST, "key": "cid"}})
     w = LatticeGridWidget(r)
-    w._view_timeout = 0.2  # no browser in this test: fail fast rather than wait the real default
-    with pytest.raises(LatticeViewTimeout):
+    t0 = time.monotonic()
+    with pytest.raises(LatticeViewNeedsBrowser, match="on_view"):
         w.view
+    assert time.monotonic() - t0 < 0.5
     assert w._df.shape == (0, 0)  # confirms what would otherwise be returned silently
 
 

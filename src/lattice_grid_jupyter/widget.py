@@ -30,10 +30,9 @@ cross the comm. See ``_engine.py`` and the README's "Large data" section.
 from __future__ import annotations
 
 import pathlib
-import time
 import uuid
 import warnings
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import anywidget
 import numpy as np
@@ -47,12 +46,7 @@ from . import _serialize as S
 from ._engine import AGGREGATES, OPERATORS, PandasEngine
 from ._options import LatticeGridWarning
 from ._router import LatticeRouter, shaped_frame
-from ._view import LatticeViewTimeout, LazyView
-
-#: How long ``view`` waits for the browser before raising, for a case the kernel
-#: cannot compute on its own (BACKLOG-0004772). Tests set it short; a notebook
-#: cell blocked this long almost certainly has no front end attached at all.
-VIEW_TIMEOUT_SECONDS = 5.0
+from ._view import LatticeViewNeedsBrowser, LazyView
 
 #: Row count at and above which the widget switches to the windowed source.
 DEFAULT_LARGE_THRESHOLD = 100_000
@@ -61,6 +55,18 @@ _COPY_ON_WRITE = int(pd.__version__.split(".")[0]) >= 3
 
 _HERE = pathlib.Path(__file__).parent
 _STATIC = _HERE / "static"
+
+
+class _OnViewHandle:
+    """Returned by :meth:`LatticeGridWidget.on_view`. ``remove()`` stops the callback."""
+
+    def __init__(self, widget: "LatticeGridWidget", handler: Callable, names: list):
+        self._widget = widget
+        self._handler = handler
+        self._names = names
+
+    def remove(self) -> None:
+        self._widget.unobserve(self._handler, names=self._names)
 
 
 class LatticeGridWidget(anywidget.AnyWidget):
@@ -137,7 +143,6 @@ class LatticeGridWidget(anywidget.AnyWidget):
         self._engine = None
         self._router_obj: LatticeRouter | None = None
         self._got_shaped = False  # router: has the browser reported shaped rows yet?
-        self._view_timeout = VIEW_TIMEOUT_SECONDS  # tests may shorten this
         self.route = route
         if isinstance(df, LatticeRouter):
             if route is None and len(df.routes) == 1:
@@ -423,10 +428,15 @@ class LatticeGridWidget(anywidget.AnyWidget):
         All``/headless execution, where the browser never gets a turn to report
         back. Once the browser HAS reported its own view (``_view_keys``), that
         report wins (it may reflect live, in-browser state this kernel never
-        saw). A router's view needs the browser's shaping -- no join/rollup is
-        reimplemented here -- so before its first report this blocks for it,
-        with a timeout, rather than silently handing back the empty placeholder
-        frame; the same timeout guards any state this kernel cannot compute.
+        saw).
+
+        A view only the browser can produce -- a router's shaped rows before
+        the grid's first report, or a filter/sort this kernel cannot evaluate
+        -- raises :class:`LatticeViewNeedsBrowser` **at once** (BACKLOG-0005030):
+        this property never waits for the browser, on any ipykernel version.
+        Read ``widget.view`` again in a later cell once the grid has rendered,
+        or use ``widget.on_view(callback)`` to be called the moment the report
+        arrives.
 
         Large data (windowed): a :class:`LazyView` -- nothing is materialised
         until you ask (``len(view)``, ``view.head(n)``, ``view.to_pandas()``)."""
@@ -435,14 +445,41 @@ class LatticeGridWidget(anywidget.AnyWidget):
         if self._view_keys is not None:
             return self._frame_for(self._view_keys)
         if self._router_obj is not None and not self._got_shaped:
-            self._await_browser_report(lambda: self._got_shaped)
-            return self.view
+            raise self._needs_browser()
         try:
             positions = self._client_view_positions()
         except (KeyError, ValueError):
-            self._await_browser_report(lambda: self._view_keys is not None)
-            return self.view
+            raise self._needs_browser() from None
         return self._frame_for([self._keys[p] for p in positions])
+
+    @staticmethod
+    def _needs_browser() -> LatticeViewNeedsBrowser:
+        return LatticeViewNeedsBrowser(
+            "[lattice] widget.view needs the browser to report the grid's view (a router's "
+            "shaped rows, or state this kernel cannot compute), and it has not yet. This "
+            "property never waits for it: read widget.view again in a later cell once the "
+            "grid has rendered, or register widget.on_view(callback) to be called when the "
+            "report arrives.")
+
+    def on_view(self, callback: Callable[[pd.DataFrame], None]):
+        """Call ``callback(view)`` each time the browser reports a new view --
+        a router's shaped rows, or its own computed view -- and once
+        immediately if a view is already known. This runs from the kernel's
+        normal comm handling between cells, so (unlike the sync ``view``
+        property) it delivers a browser-only view on every ipykernel version;
+        it never fires from inside the cell that registered it.
+
+        Returns a handle; call ``handle.remove()`` to stop it."""
+        def handler(change: dict | None = None) -> None:
+            try:
+                new_view = self.view
+            except LatticeViewNeedsBrowser:
+                return
+            callback(new_view)
+        names = ["_shaped", "_view_keys"]
+        self.observe(handler, names=names)
+        handler()
+        return _OnViewHandle(self, handler, names)
 
     def _client_view_positions(self) -> np.ndarray:
         """The view's row positions in ``self._df``, with the same filter + quick
@@ -450,31 +487,6 @@ class LatticeGridWidget(anywidget.AnyWidget):
         a plain small frame answers identically without the browser."""
         st = self.state or {}
         return PandasEngine(self._df).positions(st.get("filters"), st.get("quick") or "", st.get("sort"))
-
-    def _await_browser_report(self, done, timeout: float | None = None) -> None:
-        """Block, pumping the kernel's own message queue, until ``done()`` is
-        true -- or raise :class:`LatticeViewTimeout` rather than let the caller
-        read a stale or silently empty view."""
-        timeout = self._view_timeout if timeout is None else timeout
-        kernel = None
-        try:
-            from IPython import get_ipython
-            kernel = getattr(get_ipython(), "kernel", None)
-        except Exception:  # noqa: BLE001
-            kernel = None
-        deadline = time.monotonic() + timeout
-        while not done():
-            if kernel is not None and hasattr(kernel, "do_one_iteration"):
-                kernel.do_one_iteration()
-            else:
-                time.sleep(0.05)
-            if time.monotonic() >= deadline:
-                raise LatticeViewTimeout(
-                    "[lattice] widget.view needs the browser to report the grid's view, and "
-                    f"none arrived within {timeout:g}s. This happens with no front end attached "
-                    "(a headless run) or under Run All racing ahead of the browser; render the "
-                    "grid and let it draw once, or avoid state this kernel cannot compute on its "
-                    "own (e.g. a router route, before its first report).")
 
     def _on_state_for_view(self, change: dict) -> None:
         # Windowed: the view is defined by the state, so a state change that
