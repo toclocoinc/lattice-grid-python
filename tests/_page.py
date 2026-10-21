@@ -5,6 +5,8 @@ each ``set`` the front end makes (``window.__sets``) and lets a test play the pa
 of the kernel (``window.__pyset(key, value)`` fires ``change:<key>``).
 """
 
+from __future__ import annotations
+
 import json
 import pathlib
 
