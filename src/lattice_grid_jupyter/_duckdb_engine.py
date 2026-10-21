@@ -802,10 +802,11 @@ class DuckDBEngine(PandasEngine):
             counts[:ordered] = [int(x) for x in row[1:]]
         elif ordered:
             # edges that repeat: the bucket is the last edge not above the value (searchsorted, side=right)
-            e = q.p(edges)
+            # a sum of comparisons, not a SQL lambda: the lambda syntax differs between duckdb 1.x and 2.x
+            below = " + ".join(f"CASE WHEN {q.p(x)} <= {num} THEN 1 ELSE 0 END" for x in edges)
             top = q.p(edges[-1])
             rows = self._fetch_all(
-                f"SELECT CASE WHEN {num} = {top} THEN {ordered - 1} ELSE len(list_filter({e}, x -> x <= {num})) - 1 END AS bin_ix, "
+                f"SELECT CASE WHEN {num} = {top} THEN {ordered - 1} ELSE ({below}) - 1 END AS bin_ix, "
                 f"count(*) FROM __BASE__ WHERE {where} AND {num} >= {q.p(edges[0])} AND {num} <= {top} "
                 f"GROUP BY bin_ix", q.params)
             row = [0]
