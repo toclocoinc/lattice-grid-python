@@ -10,8 +10,12 @@ LatticeChart -- a chart viewer bound to a Lattice grid in Jupyter (card 1619).
 
 Every view is a viewer of a dataset. The chart is bound to the grid's own dataset
 through the grid's own binding, so it follows the grid's filters, quick search and
-selection live in the browser: no message goes to Python when you filter. A chart
-can also take a DataFrame directly (``LatticeChart(df, type="scatter", ...)``).
+selection live in the browser: no message goes to Python when you filter. Selecting
+rows follows by default (``selection=False`` turns it off); how a type follows is
+the grid's own ``chartSelectionSupport`` -- ``fan`` and ``decomposition`` redraw
+over the selected rows and restore all rows when the selection clears, most other
+types dim everything else. A chart can also take a DataFrame directly
+(``LatticeChart(df, type="scatter", ...)``).
 
 The chart spec is plain data: ``snake_case`` keys are mapped to the grid's
 camelCase, and a key the grid's ``ChartSpec`` does not declare is reported by name
@@ -207,7 +211,14 @@ class LatticeChart(anywidget.AnyWidget):
 
     # --- the spec, the type, what must load -------------------------------------
     def _sync_all(self) -> None:
-        self._spec = map_spec(self.type, self.spec)
+        spec = dict(self.spec)
+        if self._bound is not None and "selection" not in spec:
+            # A chart bound to a grid follows its selection by default (the grid's own
+            # chartSelectionSupport says how: fan/decomposition redraw over the selected
+            # rows, geomap zooms to them, everything else dims the rest). selection=False
+            # turns it off.
+            spec["selection"] = True
+        self._spec = map_spec(self.type, spec)
         names = _module_names(self.type)
         self._modules = names
         self._chart_js = _read_modules(names) if self._grid_source == "vendor" else {}

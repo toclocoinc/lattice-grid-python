@@ -86,7 +86,7 @@ def test_unknown_spec_key_is_warned_by_name_with_the_grids_warning_id():
     g = LatticeGridWidget(frame(20))
     with pytest.warns(LatticeGridWarning, match=r"config\.unknown:scor\b.*'scor'") as rec:
         c = LatticeChart(g, type="roc", label="churned", scor="p")
-    assert "scor" not in c._spec and c._spec == {"label": "churned"}
+    assert "scor" not in c._spec and c._spec == {"label": "churned", "selection": True}
     assert "[lattice]" in str(rec[0].message)
 
 
@@ -138,6 +138,20 @@ def test_charts_and_grids_lay_out_with_ipywidgets_boxes():
     col = ipywidgets.VBox([g, c])
     assert list(row.children) == [g, c] and list(col.children) == [g, c]
     assert row.get_state()["children"] == ["IPY_MODEL_" + g.model_id, "IPY_MODEL_" + c.model_id]
+
+
+def test_a_chart_bound_to_a_grid_follows_its_selection_by_default():
+    g = LatticeGridWidget(frame(20))
+    assert LatticeChart(g, type="bar", x="seg", y="v")._spec["selection"] is True
+    assert LatticeChart(g, type="fan", x="day", y="sales")._spec["selection"] is True
+    off = LatticeChart(g, type="bar", x="seg", y="v", selection=False)
+    assert off._spec["selection"] is False
+    # chart.update() replaces the spec; the default still applies unless it says otherwise
+    c = LatticeChart(g, type="bar", x="seg", y="v", selection=False)
+    c.update(type="bar", x="seg", y="v")
+    assert c._spec["selection"] is True
+    # a chart bound to a DataFrame, not a grid widget, is not given a default
+    assert "selection" not in LatticeChart(frame(20), type="scatter", x="v", y="w")._spec
 
 
 def test_the_grid_has_a_stable_uid_the_chart_binds_to():
@@ -287,6 +301,57 @@ def test_real_browser_a_chart_follows_the_grids_selection_live():
             page.wait_for_function(f"{chart_js(1)}.querySelectorAll('[data-dim=true]').length === 39", timeout=8000)
             assert count(page, ".lat-chartview__point") == 40
             assert page.evaluate("window.__sent.length") == sent
+        finally:
+            browser.close()
+
+
+def test_real_browser_a_bound_fan_chart_redraws_over_the_grids_selection_by_default():
+    df = frame(36)
+    g = LatticeGridWidget(df, offline=True)
+    c = LatticeChart(g, type="fan", x="day", y="sales", forecast="yhat", lower="lo", upper="hi")
+    assert c._spec["selection"] is True  # on by default: no selection=True given
+    with sync_playwright() as p:
+        browser, page = open_page(p, [g, c])
+        try:
+            page.wait_for_selector("#root0 .lat-cell[role=gridcell]")
+            wait_chart(page)
+            assert len(data(page)["points"]) == 36
+            # select rows 13-24 of 36 (0-indexed 12..23), in the grid, not the chart
+            page.evaluate("""(() => {
+                const grid = document.querySelector('#root0 div[style*=height]').__latticeGrid;
+                const keys = [];
+                for (let i = 12; i < 24; i++) keys.push(grid.rows.get(i).key);
+                grid.selection.set(keys);
+            })()""")
+            page.wait_for_function(f"{chart_js(1)}.__latticeChart.data().points.length === 12", timeout=8000)
+            pts = data(page)["points"]
+            assert [p_["label"] for p_ in pts] == list(df.day[12:24])
+            # clearing the selection restores the full history
+            page.evaluate("document.querySelector('#root0 div[style*=height]').__latticeGrid.selection.clear()")
+            page.wait_for_function(f"{chart_js(1)}.__latticeChart.data().points.length === 36", timeout=8000)
+        finally:
+            browser.close()
+
+
+def test_real_browser_selection_false_turns_off_following_the_grids_selection():
+    df = frame(36)
+    g = LatticeGridWidget(df, offline=True)
+    c = LatticeChart(g, type="fan", x="day", y="sales", forecast="yhat", lower="lo", upper="hi", selection=False)
+    assert c._spec["selection"] is False
+    with sync_playwright() as p:
+        browser, page = open_page(p, [g, c])
+        try:
+            page.wait_for_selector("#root0 .lat-cell[role=gridcell]")
+            wait_chart(page)
+            assert len(data(page)["points"]) == 36
+            page.evaluate("""(() => {
+                const grid = document.querySelector('#root0 div[style*=height]').__latticeGrid;
+                const keys = [];
+                for (let i = 12; i < 24; i++) keys.push(grid.rows.get(i).key);
+                grid.selection.set(keys);
+            })()""")
+            page.wait_for_timeout(300)  # no selection listener: nothing to wait on, so wait out the debounce window
+            assert len(data(page)["points"]) == 36  # unchanged: selection following is off
         finally:
             browser.close()
 

@@ -8,6 +8,12 @@ and are not listed here; a revision above `.0` is.
 
 ### Fixed
 
+- `LatticeChart` bound to a grid now follows the grid's selection live by
+  default, as the docs always said: `fan` and `decomposition` redraw over the
+  selected rows (restoring all rows once the selection clears) and other types
+  follow it the grid's own way (emphasis, or zoom for `geomap`). Before this,
+  the chart spec never turned selection on, so only an explicit
+  `selection=True` worked. `selection=False` turns it off.
 - `widget.view` on a view only the browser can produce (a router's shaped rows
   before the grid's first report) no longer blocks waiting for the browser --
   on ipykernel 6 that always ended in `LatticeViewTimeout` with a "coroutine
