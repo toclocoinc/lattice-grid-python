@@ -4,6 +4,22 @@ Wrapper versions are `<grid version>.<revision>` (see `RELEASING.md`). Automatic
 grid bumps (`Lattice Grid X -> Python wrappers X.0`) change only the vendored grid
 and are not listed here; a revision above `.0` is.
 
+## Unreleased
+
+### Fixed
+
+- `widget.view` on a view only the browser can produce (a router's shaped rows
+  before the grid's first report) no longer blocks waiting for the browser --
+  on ipykernel 6 that always ended in `LatticeViewTimeout` with a "coroutine
+  'Kernel.do_one_iteration' was never awaited" warning, and no wait is safe
+  inside a running cell on any ipykernel. It now raises `LatticeViewNeedsBrowser`
+  at once, naming the fix: read `widget.view` again in a later cell once the
+  grid has rendered, or register the new `widget.on_view(callback)`, called
+  with the view each time the browser reports one (and immediately if one is
+  already known) from the kernel's normal comm handling between cells -- this
+  works on every ipykernel version. Views the kernel can compute are unchanged
+  and still return immediately.
+
 ## 1.109.0.0
 
 Lattice Grid 1.109.0. `lattice-grid-pandas`, `lattice-grid-jupyter` and
