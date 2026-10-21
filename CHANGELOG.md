@@ -4,7 +4,10 @@ Wrapper versions are `<grid version>.<revision>` (see `RELEASING.md`). Automatic
 grid bumps (`Lattice Grid X -> Python wrappers X.0`) change only the vendored grid
 and are not listed here; a revision above `.0` is.
 
-## Unreleased
+## 1.109.0.0
+
+Lattice Grid 1.109.0. `lattice-grid-pandas`, `lattice-grid-jupyter` and
+`lattice-grid-dash` move to 1.109.0.0 together, with these widget fixes.
 
 ### Fixed
 
