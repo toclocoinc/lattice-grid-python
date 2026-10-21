@@ -217,7 +217,7 @@ def test_real_browser_group_by_aggregates_pushed_equals_client():
             want, got = group_rows(client), group_rows(win)
             assert len(want["groups"]) == 3 and got["groups"] == want["groups"]
             assert want["firstLeaves"] and got["firstLeaves"] == want["firstLeaves"]
-            assert "grouped" in win.lg_log
+            assert "grouplevel" in win.lg_log
         finally:
             s.close()
 

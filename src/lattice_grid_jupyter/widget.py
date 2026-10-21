@@ -398,6 +398,8 @@ class LatticeGridWidget(anywidget.AnyWidget):
             return e.execute(p.get("query") or {})
         if method == "grouped":
             return e.grouped_aggregates(p.get("query") or {}, p.get("groupBy") or [], p.get("aggregates") or [])
+        if method == "grouplevel":
+            return e.group_level(p.get("query") or {}, p.get("aggregates") or [])
         if method == "aggregates":
             return e.aggregates(p.get("query") or {}, p.get("aggregates") or [])
         if method == "facet":

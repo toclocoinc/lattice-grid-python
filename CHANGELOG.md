@@ -21,6 +21,13 @@ and are not listed here; a revision above `.0` is.
 
 ### Fixed
 
+- Grouping a large frame (the windowed source, above `large_threshold` rows) now behaves as in
+  memory. `group_default_expanded` (`False`, `True` or a level number) decides which groups start
+  open, instead of every group opening; the group order follows the sort, including a sort on an
+  aggregate or on the count; and opening a group asks the kernel for its child window, so the rows
+  paint rather than staying on `Loading rows...` skeletons. Collapsing and re-opening a group, and
+  grouping two levels deep, work. The kernel answers each group level (and the leaf rows of the
+  innermost group) in one request.
 - `LatticeChart` bound to a grid now follows the grid's selection live by
   default, as the docs always said: `fan` and `decomposition` redraw over the
   selected rows (restoring all rows once the selection clears) and other types
