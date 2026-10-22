@@ -649,6 +649,93 @@ class DuckDBEngine(PandasEngine):
         out.sort(key=lambda t: (t[0], t[1]))
         return [o[2] for o in out]
 
+    # --- one level of a grouped view (the adapter's ``executeGroupLevel``) ---------
+    def _path_where(self, group_by: list[str], values: list, q: _Q) -> str:
+        """SQL naming the group opened by ``values`` (one typed key per leading grouping field)."""
+        parts = []
+        for field, value in zip(group_by, values):
+            c = self.col(field)
+            if value is None:
+                parts.append(f"({c.key} IS NULL)")
+            elif c.kind == "datetime":
+                parts.append(f"({c.key} IS NOT DISTINCT FROM CAST({q.p(str(value))} AS TIMESTAMP))")
+            else:
+                parts.append(f"({c.key} IS NOT DISTINCT FROM {q.p(value)})")
+        return " AND ".join(parts) or "true"
+
+    @staticmethod
+    def _group_key(v: Any) -> Any:
+        if isinstance(v, (datetime.datetime, datetime.date)):
+            v = pd.Timestamp(v)
+        return _jsonable_scalar(v)
+
+    def group_level(self, query: dict, aggregates: list[dict]) -> dict:
+        """One level of the grouped view, as SQL: the groups under ``groupValues``, or the leaf rows."""
+        group_by = [str(k) for k in (query.get("groupBy") or [])]
+        values = list(query.get("groupValues") or [])
+        sort = [s for s in (query.get("sort") or []) if s and s.get("col") is not None]
+        filters, quick = query.get("filters"), query.get("quick") or ""
+        rng = query.get("range")
+        start = max(0, int(rng.get("start", 0))) if rng else 0
+        end = max(start, int(rng.get("end", start))) if rng else None
+        q = self._q()
+        where = f"({self._where(filters, quick, q)}) AND {self._path_where(group_by, values, q)}"
+        if len(values) >= len(group_by):
+            total = int(self._scalar(f"SELECT count(*) FROM __BASE__ WHERE {where}", q.params))
+            if end is not None and end <= start:
+                pos = np.empty(0, dtype=np.int64)
+            else:
+                lim = f" LIMIT {q.i(end - start)}" if end is not None else ""
+                sql = (f"SELECT {POS} FROM __BASE__ WHERE {where} ORDER BY {self._order_by(sort)}"
+                       f"{lim} OFFSET {q.i(start)}")
+                pos = np.array([r[0] for r in self._fetch_all(sql, q.params)], dtype=np.int64)
+            return {"columnar": self.window(pos), "total": total, "leaves": True}
+        field = group_by[len(values)]
+        c = self.col(field)
+        totals = [(str(a["id"]), str(a["col"]), str(a["fn"])) for a in aggregates]
+        agg_sql = [self._agg_sql(self.col(col), fn) for _, col, fn in totals]
+        by_id = {t[0]: i for i, t in enumerate(totals)}
+
+        def by_key(d: str, nulls: str) -> list[str]:
+            rd = "ASC" if d == "DESC" else "DESC"
+            if c.ordered:
+                return [f"min({c.num}) {d} NULLS {nulls}"]
+            return [f"lower(min({c.txt})) {d} NULLS {nulls}", f"min({c.txt}) {rd}"]
+
+        order: list[str] = []
+        for entry in sort:   # the first entry is the most significant
+            col = str(entry["col"])
+            d = "DESC" if entry.get("dir") == "desc" else "ASC"
+            nulls = "FIRST" if entry.get("nullsFirst") else "LAST"
+            if col == field:
+                order += by_key(d, nulls)
+            elif col in by_id:
+                order.append(f"a{by_id[col]} {d} NULLS {nulls}")
+        if not order:   # the grid's own fallback: key order, a missing key last
+            order = by_key("ASC", "LAST")
+        order.append("fp ASC")
+        sel = [f"{c.key} AS k", "count(*) AS n"] + [f"{e} AS a{i}" for i, e in enumerate(agg_sql)] \
+            + [f"min({POS}) AS fp"]
+        lim = f" LIMIT {q.i(end - start)}" if end is not None else ""
+        sql = (f"SELECT {', '.join(sel)} FROM __BASE__ WHERE {where} GROUP BY 1 "
+               f"ORDER BY {', '.join(order)}{lim} OFFSET {q.i(start)}")
+        rows_out = []
+        if end is None or end > start:
+            for row in self._fetch_all(sql, q.params):
+                rows_out.append({field: self._group_key(row[0]), "leafCount": int(row[1]),
+                                 "totals": {t[0]: self._py(row[2 + i]) for i, t in enumerate(totals)}})
+        q2 = self._q()
+        w2 = f"({self._where(filters, quick, q2)}) AND {self._path_where(group_by, values, q2)}"
+        n_groups = int(self._scalar(f"SELECT count(*) FROM (SELECT 1 FROM __BASE__ WHERE {w2} GROUP BY {c.key})",
+                                    q2.params))
+        out: dict = {"rows": rows_out, "total": n_groups, "leaves": False}
+        if not values:
+            items = ["count(*)"] + [f"{e} AS a{i}" for i, e in enumerate(agg_sql)]
+            row = self._fetch_all(f"SELECT {', '.join(items)} FROM __BASE__ WHERE {w2}", q2.params)[0]
+            out["matchCount"] = int(row[0])
+            out["grand"] = {t[0]: self._py(row[1 + i]) for i, t in enumerate(totals)}
+        return out
+
     # --- header histograms (compute/facet.js) --------------------------------------
     def facet_kind(self, c: _SCol) -> str:  # type: ignore[override]
         return {"number": "numeric", "bool": "boolean", "datetime": "date"}.get(c.kind, "category")

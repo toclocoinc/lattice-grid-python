@@ -29,6 +29,13 @@ and are not listed here; a revision above `.0` is.
 
 ### Fixed
 
+- Grouping over a DuckDB relation (`LatticeGridWidget(con.table("t"), state={"group": [...]})`) no longer shows
+  "Failed to load" on every row (`AttributeError: ... no attribute '_masks'`): each group level, child window,
+  aggregate (median and percentiles included), default-expanded group and sort by key or aggregate is now
+  answered as bound SQL on the connection, and equals the Arrow path. `w.router_stats` no longer raises
+  `KeyError` before a browser has reported (as under Run All); it returns `batches`, `added`, `updated` and
+  `removed`, each 0 until the browser reports.
+
 - Grouping a large frame (the windowed source, above `large_threshold` rows) now behaves as in
   memory. `group_default_expanded` (`False`, `True` or a level number) decides which groups start
   open, instead of every group opening; the group order follows the sort, including a sort on an

@@ -407,7 +407,8 @@ class LatticeGridWidget(anywidget.AnyWidget):
         """What the route has emitted to this grid: ``batches``, ``added``, ``updated``,
         ``removed`` (cumulative, counted in the browser). Take the difference around a
         ``router.update(...)`` to see exactly which parents re-emitted."""
-        return dict(self._router_stats)
+        stats = dict(self._router_stats)   # empty until a browser reports (Run All, headless)
+        return {"batches": 0, "added": 0, "updated": 0, "removed": 0, **stats}
 
     def _no_router(self, what: str) -> None:
         if self._router_obj is not None:
