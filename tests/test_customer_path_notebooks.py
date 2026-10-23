@@ -130,9 +130,10 @@ def _outputs(cells):
 
 
 def _header_cells(page) -> list:
-    """``[text, aria-sort]`` of each column header the grid is showing."""
+    """``[text, aria-sort]`` of each named column header the grid is showing (the selection checkbox
+    column's header has no name)."""
     return page.evaluate("[...document.querySelectorAll('.lat-header-cell')]"
-                         ".map(h => [h.innerText.trim(), h.getAttribute('aria-sort')])")
+                         ".map(h => [h.innerText.trim(), h.getAttribute('aria-sort')]).filter(h => h[0])")
 
 
 def _read_again(page, index: int, timeout_s: float = 30) -> dict:
@@ -177,7 +178,9 @@ def test_router_notebook_run_all_in_lab(lab):
         # the front end reported the two rows selected with the grid's own selection API; the cell that
         # reads them is the notebook's last one, read again now (the grid reports between cells)
         _expect(_read_again(page, len(cells) - 1), {"SELECTED": "[3, 5]"})
-        page.wait_for_selector(".lat-header-cell", timeout=30000)
+        # the grid repaints after set_data's reload: wait for the new header row to be drawn
+        page.wait_for_function("[...document.querySelectorAll('.lat-header-cell')].some(h => h.innerText.trim() === 'score')",
+                               timeout=30000)
         headers = _header_cells(page)
         assert [h[0] for h in headers] == ["id", "who", "day", "score"], headers
         assert all(h[1] in (None, "none") for h in headers), f"a stale sort is still drawn: {headers}"
