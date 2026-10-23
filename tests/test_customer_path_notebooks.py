@@ -153,7 +153,10 @@ def test_small_notebook_run_all_in_lab(lab):
     page, cells = _run_all_in_lab(lab, "small")
     try:
         _expect(_printed(_outputs(cells)), SMALL)
-        page.wait_for_selector(".lat-cell[role=gridcell]", timeout=30000)
+        # a list cell reaches the grid as an array ("3,4,0"), not as Python's text for a list ("[3, 4, 0]")
+        page.wait_for_selector(".lat-cell[data-col=trend]", timeout=30000)
+        texts = page.evaluate("[...document.querySelectorAll('.lat-cell[data-col=trend]')].map(c => c.innerText.trim())")
+        assert texts and all(re.fullmatch(r"\d(,\d)*", t) for t in texts), texts
     finally:
         page.close()
 
